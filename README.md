@@ -93,14 +93,6 @@ npm run app
 - 上次主题会缓存到 `theme.json`，**从第二次启动起首帧就是正确配色**，不会再先闪一下系统明暗（只有第一次启动 / 删掉缓存后才可能看到一次）
 - 窗口用**自绘标题栏**（页签栏本身就是标题栏）：Windows 原生那条永远白色的标题栏被隐藏，右上角的最小化/最大化/关闭由系统叠加绘制，底色和图标色也跟着主题变。想退回系统标题栏：设环境变量 `PI_WEB_DESKTOP_NATIVE_TITLEBAR=1`
 
-**大输入框（长文本便签）**
-
-- pi-web 的「发送」按钮左侧会多出一个 `⤢` 按钮（由壳子注入，不改 pi-web 文件），和发送按钮同高对齐
-- 点开后**自动打开右侧文件面板，编辑器就嵌在面板内容区里**，不会遮住中间的对话；原来的文件预览被临时盖住，关掉便签即恢复
-- `Ctrl+Enter` 或「发送到对话」把内容写回 pi-web 原来的输入框并发送；`Esc` 收起。若输入框已有内容，会在其后追加（空一行），不会覆盖
-- 想临时关掉：设环境变量 `PI_WEB_DESKTOP_NO_COMPOSER_EXPAND=1` 后重启应用
-- **兼容性**：只在运行时往页面 realm 里加浮动元素、包装 `EventSource`/`Notification`，不改 pi-web 的文件和构建产物；但依赖 4 个页面契约（`textarea.chat-input-textarea`、发送按钮的 `aria-label`、`#file-panel` / `.file-panel-expand-button`、SSE 的 `agent_end`）。`pi-web` 升级后若这些变了，最坏情况是这个按钮/状态兜底失效，不会导致 pi-web 本身打不开；跑 `npm run check:composer` 可同时检查注入脚本和本机 pi-web 的这些契约是否还在。
-
 - **页签栏**
 
 - 点击切换；中间滚轮/中键关闭（固定页签不会关）
@@ -368,8 +360,6 @@ npm run typecheck  # tsc --noEmit
 npm run build      # 构建到 out/
 npm run smoke      # 上游契约冒烟（4 项断言）
 npm run check:theme # 主题探测脚本语法/返回值回归检查（不启动 Electron）
-npm run check:status # 页签状态探测脚本检查
-npm run check:composer # 大输入框注入脚本的契约检查
 npm run icons      # 由 build/logo.svg 重新生成窗口 ICO / 托盘图 / 渲染层 logo
 npm run shortcut   # 生成/修复快捷方式（维护开始菜单 AUMID 注册点、清理 Electron.lnk）
 npm run dist       # 绿色版 exe（打包已暂停，脚本保留）

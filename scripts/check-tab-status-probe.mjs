@@ -40,14 +40,13 @@ function makeRow({ key = "session:group:dom-id", running = false, unread = false
   };
 }
 
-async function run({ search, marks = {}, api, row = null, notifyDone = false, sseEvents = [] }) {
+async function run({ search, marks = {}, api, row = null }) {
   const store = new Map();
   // 未读标记 pi-web 是把 {sessionId: 时间戳} 整串 JSON 存进一个 key
   if (Object.keys(marks).length) {
     store.set("pi-web:unread-session-ids", JSON.stringify(marks));
   }
   const reads = { unreadKey: 0 };
-  const sseListeners = [];
   globalThis.window = {
     location: { search },
     localStorage: {
@@ -56,11 +55,6 @@ async function run({ search, marks = {}, api, row = null, notifyDone = false, ss
         return store.get(key) ?? null;
       },
       setItem: (key, value) => store.set(key, value),
-    },
-    EventSource: class {
-      addEventListener(name, listener) {
-        if (name === "message") sseListeners.push(listener);
-      }
     },
   };
   globalThis.document = {
@@ -72,12 +66,6 @@ async function run({ search, marks = {}, api, row = null, notifyDone = false, ss
   };
 
   new Function(probeMatch[1])();
-  await new Promise((resolve) => setTimeout(resolve, 10));
-  if (notifyDone) window.__piDesktopTabStatus.markDone();
-  if (sseEvents.length) new window.EventSource('/api/agent/s1/events');
-  for (const event of sseEvents) {
-    for (const listener of sseListeners) listener({ data: JSON.stringify({ type: event }) });
-  }
   await new Promise((resolve) => setTimeout(resolve, 10));
   const result = JSON.parse(new Function(`return ${readMatch[1]}`)());
   return { ...(result ?? { error: "probe 未安装" }), reads };
@@ -99,7 +87,7 @@ const cases = [
     label: "历史未读标记不串扰：接口空闲 + 残留 mark 也不报未读",
     input: {
       search: "?session=s1",
-      marks: { "other-session": Date.now() },
+      marks: { s1: 1730000000000, "other-session": 1730000000001 },
       api: { runningSessionIds: [], awaitingInputSessionIds: [] },
       row: makeRow({ unread: true }),
     },
@@ -107,7 +95,7 @@ const cases = [
       out.running === false &&
       !("unread" in out) &&
       !("unreadAt" in out) &&
-      out.doneSeq === 0,
+      out.reads.unreadKey === 0,
   },
   {
     label: "等待用户确认：awaitingInputSessionIds",
@@ -123,45 +111,6 @@ const cases = [
     label: "接口挂了：用侧栏逐行状态兜底 running",
     input: { search: "?session=s1", api: null, row: makeRow({ running: true }) },
     check: (out) => out.running === true && out.ready === false && !("unread" in out),
-  },
-  {
-    label: "通知先行：接口/侧栏还说 running 也按完成处理",
-    input: {
-      search: "?session=s1",
-      api: { runningSessionIds: ["s1"], awaitingInputSessionIds: [] },
-      row: makeRow({ running: true }),
-      notifyDone: true,
-    },
-    check: (out) => out.running === false && out.awaiting === false && out.doneSeq === 1,
-  },
-  {
-    label: "本会话未读时间戳：接口还报 running 也按完成处理",
-    input: {
-      search: "?session=s1",
-      api: { runningSessionIds: ["s1"], awaitingInputSessionIds: [] },
-      marks: { s1: Date.now() + 5_000 },
-    },
-    check: (out) => out.running === false && out.doneSeq === 1,
-  },
-  {
-    label: "SSE agent_end：接口没清也按完成处理",
-    input: {
-      search: "?session=s1",
-      api: { runningSessionIds: ["s1"], awaitingInputSessionIds: [] },
-      row: makeRow({ running: true }),
-      sseEvents: ["agent_end"],
-    },
-    check: (out) => out.running === false && out.doneSeq === 1,
-  },
-  {
-    label: "SSE agent_start：新一轮开始后恢复 running",
-    input: {
-      search: "?session=s1",
-      api: { runningSessionIds: ["s1"], awaitingInputSessionIds: [] },
-      row: makeRow({ running: true }),
-      sseEvents: ["agent_end", "agent_start"],
-    },
-    check: (out) => out.running === true && out.doneSeq === 1,
   },
 ];
 

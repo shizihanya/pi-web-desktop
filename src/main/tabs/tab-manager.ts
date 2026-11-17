@@ -30,7 +30,6 @@ import {
 } from "./tab-status";
 import { loadTabs, saveTabs, type PersistedSplit } from "./tab-persistence";
 import { saveTheme } from "./theme-persistence";
-import { COMPOSER_EXPAND_SCRIPT } from "./composer-expand";
 
 /** 页签栏高度（CSS 里的 --tabbar-height、shared/split.ts 里的 TABBAR_HEIGHT 必须一致） */
 export const TABBAR_HEIGHT = TITLEBAR_HEIGHT;
@@ -45,18 +44,6 @@ const SAVE_DEBOUNCE_MS = 300;
 /** 页签状态轮询间隔（和主题探测一样是主进程主动读，页面里不装常驻定时器）
  *  比 pi-web 自己的 2.5s 轮询快，尽量不漏掉短回答的 running→idle 跳变 */
 const STATUS_POLL_MS = 700;
-/** 单个页签读取状态的超时：某个页面卡住时不能把其他页签的轮询一起拖死 */
-const STATUS_READ_TIMEOUT_MS = 1_500;
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("tab status read timeout")), ms);
-    promise.then(
-      (value) => { clearTimeout(timer); resolve(value); },
-      (error: unknown) => { clearTimeout(timer); reject(error); },
-    );
-  });
-}
 
 /**
  * pi-web 任务完成通知优先走 ServiceWorkerRegistration.showNotification()。
@@ -102,11 +89,6 @@ const WINDOWS_NOTIFICATION_PATCH = String.raw`(() => {
       };
       class PiDesktopNotification extends OriginalNotification {
         constructor(title, options) {
-          // 通知比接口先到时，立刻告诉状态探测脚本「这一轮完成了」，页签不用等接口轮询追上
-          try {
-            const probe = window.__piDesktopTabStatus;
-            if (probe && typeof probe.markDone === "function") probe.markDone();
-          } catch (e) {}
           let finalTitle = typeof title === "string" ? title : "";
           try {
             const tab = tabTitle();
@@ -151,8 +133,6 @@ interface Tab {
   /** 上一次探测时是否在跑，用来识别「回答完毕」这一跳变 */
   running: boolean;
   awaiting: boolean;
-  /** 已处理的「任务完成通知」次数；接口滞后时靠它兜底亮未读 */
-  doneSeq: number;
   /** 「回答完毕未查看」的时间戳：running→idle 且当时不是前台页签 */
   pendingUnreadAt: number | null;
   /** 已经看过的那一轮未读，避免切走又切回时重复提示 */
@@ -416,7 +396,6 @@ export class TabManager {
       sessionId: null,
       running: false,
       awaiting: false,
-      doneSeq: 0,
       pendingUnreadAt: null,
       seenUnreadAt: null,
     };
@@ -434,15 +413,6 @@ export class TabManager {
     };
     wc.on("dom-ready", installStatusProbe);
     wc.on("did-finish-load", installStatusProbe);
-
-    // 大输入框（便签）：给 pi-web 的输入框加一个展开按钮，右侧停靠大文本框。
-    // 所有节点挂在 body 上、位置按原输入框实时计算，React 重渲染不会冲掉。
-    const installComposerExpand = (): void => {
-      if (wc.isDestroyed() || process.env.PI_WEB_DESKTOP_NO_COMPOSER_EXPAND === "1") return;
-      void wc.executeJavaScript(COMPOSER_EXPAND_SCRIPT, true).catch(() => {});
-    };
-    wc.on("dom-ready", installComposerExpand);
-    wc.on("did-finish-load", installComposerExpand);
 
     // Windows 下 pi-web 的 SW 通知不会出 toast，强制回落到 window.Notification。
     // 页面 reload / 切会话后 realm 会重建，所以 dom-ready 与 did-finish-load 各补一次。
@@ -1252,31 +1222,22 @@ export class TabManager {
     this.pollingStatus = true;
     let changed = false;
     try {
-      const tabs = [...this.tabs];
-      // 并行读所有页签，且单个页面卡住最多等 1.5s；否则一个后台页签会把整轮轮询拖住
-      const probes = await Promise.all(
-        tabs.map(async (tab): Promise<TabStatusProbe | null> => {
-          const wc = tab.view.webContents;
-          if (wc.isDestroyed()) return null;
-          try {
-            const raw = await withTimeout(
-              wc.executeJavaScript(TAB_STATUS_READ_SCRIPT, true) as Promise<unknown>,
-              STATUS_READ_TIMEOUT_MS,
-            );
-            if (typeof raw !== "string" || raw === "null") return null;
+      for (const tab of [...this.tabs]) {
+        const wc = tab.view.webContents;
+        if (wc.isDestroyed()) continue;
+        let probe: TabStatusProbe | null = null;
+        try {
+          const raw = (await wc.executeJavaScript(TAB_STATUS_READ_SCRIPT, true)) as unknown;
+          if (typeof raw === "string" && raw !== "null") {
             const parsed = JSON.parse(raw) as TabStatusProbe & { error?: string };
-            if (parsed.error || typeof parsed.running !== "boolean") return null;
-            return parsed;
-          } catch {
-            // 页面还在加载 / 正在导航 / 卡住：保留上一轮状态，不让指示器闪一下
-            return null;
+            if (!parsed.error && typeof parsed.running === "boolean") probe = parsed;
           }
-        }),
-      );
-      tabs.forEach((tab, index) => {
-        const probe = probes[index];
+        } catch {
+          // 页面还在加载 / 正在导航：保留上一轮状态，不让指示器闪一下
+          continue;
+        }
         if (probe) changed = this.applyTabStatus(tab, probe) || changed;
-      });
+      }
     } finally {
       this.pollingStatus = false;
     }
@@ -1299,9 +1260,6 @@ export class TabManager {
   private applyTabStatus(tab: Tab, probe: TabStatusProbe): boolean {
     const previous = tab.status;
     const wasRunning = tab.running;
-    const doneSeq = probe.doneSeq ?? 0;
-    const doneSignal = doneSeq > tab.doneSeq;
-    if (doneSignal) tab.doneSeq = doneSeq;
 
     if (probe.sessionId && probe.sessionId !== tab.sessionId) {
       // 页签里换了对话：旧对话的未读不该继续挂在这个页签上
@@ -1319,7 +1277,7 @@ export class TabManager {
     //（那个是会话级、跨页签共享、还会残留历史会话，会让所有页签一起亮）。
     // 分屏里能同时看见多个页签：所有正在显示的都算「正在看」，不该再亮未读点
     const visible = this.groups.some((group) => group.activeId === tab.id);
-    if ((wasRunning && !probe.running && !visible) || (doneSignal && !visible)) {
+    if (wasRunning && !probe.running && !visible) {
       tab.pendingUnreadAt = Date.now();
     }
     if (probe.running) tab.pendingUnreadAt = null;

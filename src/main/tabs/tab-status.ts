@@ -29,12 +29,6 @@ export interface TabStatusProbe {
   awaiting: boolean;
   /** 是否至少成功拉过一次 /api/agent/running（调试用） */
   ready: boolean;
-  /**
-   * 页面捕获到「任务完成」系统通知的次数。
-   * pi-web 的通知可能比 /api/agent/running 先到（或接口一直没清），主进程用它兜底：
-   * 即便接口还说 running，也按「这一轮已完成」处理并亮未读点。
-   */
-  doneSeq: number;
 }
 
 /** 主进程每次轮询执行的小表达式；返回 JSON 字符串，避免结构化克隆的边界问题 */
@@ -54,11 +48,7 @@ export const TAB_STATUS_READ_SCRIPT = String.raw`(() => {
 export const TAB_STATUS_PROBE_SCRIPT = String.raw`(() => {
   if (window.__piDesktopTabStatus) return;
 
-  var cache = {
-    running: [], awaiting: [], subagents: [], at: 0, ready: false,
-    doneSeq: 0, doneSessionId: null, doneAt: 0,
-    runningSince: {}
-  };
+  var cache = { running: [], awaiting: [], subagents: [], at: 0, ready: false };
   var polling = false;
 
   function selectedRow() {
@@ -98,15 +88,9 @@ export const TAB_STATUS_PROBE_SCRIPT = String.raw`(() => {
       return response.json();
     }).then(function (data) {
       if (!data || typeof data !== "object") return;
-      var nextRunning = Array.isArray(data.runningSessionIds) ? data.runningSessionIds : [];
-      var nextSubagents = Array.isArray(data.subagentsActiveSessionIds) ? data.subagentsActiveSessionIds : [];
-      // 通知已经先行报过完成，接口终于也把它摘掉了：解除抑制，恢复正常探测
-      if (cache.doneSessionId && !has(nextRunning, cache.doneSessionId) && !has(nextSubagents, cache.doneSessionId)) {
-        cache.doneSessionId = null;
-      }
-      cache.running = nextRunning;
+      cache.running = Array.isArray(data.runningSessionIds) ? data.runningSessionIds : [];
       cache.awaiting = Array.isArray(data.awaitingInputSessionIds) ? data.awaitingInputSessionIds : [];
-      cache.subagents = nextSubagents;
+      cache.subagents = Array.isArray(data.subagentsActiveSessionIds) ? data.subagentsActiveSessionIds : [];
       cache.ready = true;
       cache.at = Date.now();
     }).catch(function () {
@@ -117,83 +101,6 @@ export const TAB_STATUS_PROBE_SCRIPT = String.raw`(() => {
     });
   }
 
-  /**
-   * pi-web 弹出「任务完成」通知时由通知补丁调用。
-   * 通知是页面自己发的，和 /api/agent/running 是两条独立路径；接口可能晚几秒甚至一直不摘，
-   * 这里先把状态压成 idle，等接口追上后再自动解除（见 refresh()）。
-   */
-  function markDone() {
-    try {
-      var current = currentSession(selectedRow());
-      if (!current.id) return;
-      cache.doneSessionId = current.id;
-      cache.doneAt = Date.now();
-      cache.doneSeq += 1;
-      cache.running = cache.running.filter(function (item) { return item !== current.id; });
-      cache.subagents = cache.subagents.filter(function (item) { return item !== current.id; });
-      cache.awaiting = cache.awaiting.filter(function (item) { return item !== current.id; });
-    } catch (e) {}
-  }
-
-  /**
-   * pi-web 完成一轮后会给「未查看的会话」写时间戳，哪怕它的 /api/agent/running
-   * 因为包装器没 settle 而一直报 running。只读当前会话自己的那一项，
-   * 并且要求时间晚于「本轮开始 running 的时间」，避免历史残留标记误伤。
-   */
-  function currentUnreadAt(id) {
-    try {
-      if (!id) return 0;
-      var raw = window.localStorage.getItem('pi-web:unread-session-ids');
-      if (!raw) return 0;
-      var marks = JSON.parse(raw);
-      var value = marks && typeof marks === 'object' ? marks[id] : null;
-      return typeof value === 'number' ? value : 0;
-    } catch (e) { return 0; }
-  }
-
-  function clearDone() {
-    // 新一轮任务开始：解除上一轮「通知/SSE 先行」的抑制，让转圈正常亮起来
-    cache.doneSessionId = null;
-    void refresh();
-  }
-
-  /**
-   * 直接监听 pi-web 自己的 SSE：它发 data: {"type":"agent_end"} / "agent_start"。
-   * 比通知可靠——通知可能被 Service Worker 抢走，也可能只在别的页签弹。
-   * 包装 EventSource 但不改它的实例行为，只是加一个只读的 message 监听。
-   */
-  function installEventSourceHook() {
-    var Original = window.EventSource;
-    if (!Original || window.__piDesktopEventSourceHooked) return;
-    function Hooked(url, config) {
-      var source = new Original(url, config);
-      var streamSession = null;
-      try {
-        var parts = String(url || '').match(/\/api\/agent\/([^/?]+)\/events/);
-        if (parts) streamSession = decodeURIComponent(parts[1]);
-      } catch (e) {}
-      try {
-        source.addEventListener('message', function (event) {
-          try {
-            var data = JSON.parse(event.data || '{}');
-            var type = data && data.type;
-            if (type !== 'agent_end' && type !== 'agent_start' && type !== 'prompt_start') return;
-            // 侧聊 / 子会话的事件不该改主会话的页签状态
-            var current = currentSession(selectedRow()).id;
-            if (streamSession && current && streamSession !== current) return;
-            if (type === 'agent_end') markDone();
-            else clearDone();
-          } catch (e) {}
-        });
-      } catch (e) {}
-      return source;
-    }
-    Hooked.prototype = Original.prototype;
-    try { Object.setPrototypeOf(Hooked, Original); } catch (e) {}
-    try { window.EventSource = Hooked; } catch (e) {}
-    Object.defineProperty(window, '__piDesktopEventSourceHooked', { value: true });
-  }
-
   function read() {
     // 后台刷新，read() 本身同步返回，主进程的轮询不会被网络拖住
     if (!cache.ready || Date.now() - cache.at > 600) void refresh();
@@ -201,38 +108,20 @@ export const TAB_STATUS_PROBE_SCRIPT = String.raw`(() => {
     var row = selectedRow();
     var current = currentSession(row);
     var id = current.id;
-    // 通知已报完成、接口还没追上（超过 30 分钟就当接口卡死，不再压制新任务）
-    var isRunning =
-      has(cache.running, id) ||
-      has(cache.subagents, id) ||
-      !!(row && row.classList.contains('is-running'));
-    if (isRunning && id && !cache.runningSince[id]) cache.runningSince[id] = Date.now();
-    if (!isRunning && id) delete cache.runningSince[id];
-
-    // 兜底：本会话在未读表里的完成时间晚于本轮开始时间 → 这一轮其实已经结束了
-    var unreadAt = currentUnreadAt(id);
-    if (isRunning && unreadAt && cache.runningSince[id] && unreadAt >= cache.runningSince[id]) {
-      markDone();
-    }
-
-    var doneFirst = !!cache.doneSessionId && cache.doneSessionId === id &&
-      Date.now() - cache.doneAt < 30 * 60 * 1000;
     return {
       sessionId: id,
       sessionSource: current.source,
-      running: !doneFirst && isRunning,
+      running:
+        has(cache.running, id) ||
+        has(cache.subagents, id) ||
+        !!(row && row.classList.contains("is-running")),
       awaiting:
-        !doneFirst &&
-        (has(cache.awaiting, id) ||
-          !!(row && row.querySelector(".session-tree-awaiting"))),
-      ready: cache.ready,
-      doneSeq: cache.doneSeq
+        has(cache.awaiting, id) ||
+        !!(row && row.querySelector(".session-tree-awaiting")),
+      ready: cache.ready
     };
   }
 
-  window.__piDesktopTabStatus = {
-    read: read, refresh: refresh, markDone: markDone, clearDone: clearDone
-  };
-  installEventSourceHook();
+  window.__piDesktopTabStatus = { read: read, refresh: refresh };
   void refresh();
 })()`;

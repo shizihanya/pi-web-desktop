@@ -16,7 +16,6 @@
     "smoke": "node scripts/smoke.mjs",
     "check:theme": "node scripts/check-theme-probe.mjs",
     "check:status": "node scripts/check-tab-status-probe.mjs",
-    "check:composer": "node scripts/check-composer-expand.mjs",
     "icons": "node scripts/build-icons.mjs",
     "dist": "electron-vite build && electron-builder --win portable",
     "dist:nsis": "electron-vite build && electron-builder --win nsis"
