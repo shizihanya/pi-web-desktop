@@ -1,0 +1,535 @@
+:root {
+  /* 与 src/main/titlebar.ts 的 TITLEBAR_HEIGHT、src/shared/split.ts 的 TABBAR_HEIGHT 一致：
+     既是单栏时的顶部页签条高度，也是分屏时每个窗格自己的页签条高度。 */
+  --tabbar-height: 40px;
+
+  /*
+   * 内置兜底配色：只在「读不到 pi-web 页面变量」时生效（老版本 / 页面还没加载完）。
+   * 正常情况由 tabbar.ts 把页面 computed style 里的 --bg / --border / --text ...
+   * 原样写成 :root 的内联变量，优先级高于这里，所以任何 pi-web 主题都能跟随。
+   */
+  color-scheme: dark;
+  --bg: #1a1a1a;
+  --bg-panel: #242424;
+  --bg-hover: #2e2e2e;
+  --bg-selected: #383838;
+  --border: #454545;
+  --text: #e8e8e8;
+  --text-muted: #b7b7b7;
+  --text-dim: #a4a4a4;
+  --accent: #a4c2f4;
+  --accent-hover: #c3d8fa;
+  --accent-contrast: #182234;
+  --ok: #3ddc97;
+  --warn: #f5a524;
+  --err: #ff6b6b;
+  /* pi-web 侧栏会话状态用的固定色（.session-tree-unread / .session-tree-awaiting） */
+  --status-unread: #0891b2;
+  --status-awaiting: #d97706;
+
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+:root[data-scheme="light"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-panel: #f5f5f5;
+  --bg-hover: #eeeeee;
+  --bg-selected: #e8e8e8;
+  --border: #e0e0e0;
+  --text: #1a1a1a;
+  --text-muted: #515c6b;
+  --text-dim: #5e6673;
+  --accent: #245bce;
+  --accent-hover: #1d4ed8;
+  --accent-contrast: #ffffff;
+  --ok: #18a058;
+  --warn: #d98a00;
+  --err: #e5484d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  /* 窗口自身的 webContents 铺满整窗：窗格之间的缝隙露这里的底色，像分隔线。
+     子 WebContentsView 叠在它上面，所以只有没被窗格盖住的地方才看得见。 */
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  user-select: none;
+  transition: background-color 120ms ease;
+}
+
+.tabbar {
+  height: var(--tabbar-height);
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  gap: 2px;
+  padding: 0 6px;
+}
+
+/*
+ * 自绘标题栏：Windows 的窗口控件（最小化/最大化/关闭）叠加在右上角，
+ * 用 WCO 的 CSS 环境变量给它们留安全区；env 不可用时用 146px 兜底。
+ * 同时把顶部条标成可拖曳区域，页签等交互元素单独排除。
+ */
+:root[data-titlebar="overlay"] .tabbar {
+  padding-left: calc(6px + env(titlebar-area-x, 0px));
+  padding-right: max(
+    calc(6px + 100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%)),
+    146px
+  );
+}
+
+/* 页签右侧的空白条就是自绘标题栏的拖曳区（双击 = 最大化/还原） */
+:root[data-titlebar="overlay"] .drag-strip {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.drag-strip {
+  flex: 1 1 auto;
+  min-width: 12px;
+}
+
+.tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 96px;
+  max-width: 220px;
+  padding: 0 8px;
+  border-radius: 7px 7px 0 0;
+  margin-top: 5px;
+  color: var(--text-muted);
+  cursor: default;
+  position: relative;
+  flex: 0 1 auto;
+}
+
+.tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.tab.active {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.tab.dragging {
+  opacity: 0.4;
+}
+
+.tab.drop-before {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.tab.drop-after {
+  box-shadow: inset -2px 0 0 var(--accent);
+}
+
+.tab-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.tab-icon.placeholder {
+  background: var(--bg-selected);
+}
+
+.tab-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.tab.pinned {
+  min-width: 34px;
+  max-width: 34px;
+  justify-content: center;
+  padding: 0;
+}
+
+.tab.pinned .tab-title,
+.tab.pinned .tab-close {
+  display: none;
+}
+
+.tab-close {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  opacity: 0;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 1;
+}
+
+.tab-close:hover {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+/*
+ * 页签状态指示器（页签名后）：完全沿用 pi-web 侧栏会话列表的视觉语言。
+ *  - running  = .sidebar-spin：一圈淡色弧线，--accent 着色，0.9s 匀速转
+ *  - unread   = .session-tree-unread：6px 实心点 + 1.4px 扩散光环（#0891b2）
+ *  - awaiting = .session-tree-awaiting：同造型，换成橙色 #d97706
+ * 固定占 12px（和 .tab-close 一样），状态切换时页签宽度不跳动。
+ */
+.tab-status {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+  pointer-events: none;
+}
+
+.tab-status[data-status="idle"] {
+  opacity: 0;
+}
+
+.tab-status-spinner {
+  width: 12px;
+  height: 12px;
+  transform-origin: 50% 50%;
+  animation: spin 0.9s linear infinite;
+}
+
+.tab-status-dot {
+  --dot-color: var(--status-unread);
+  position: relative;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--dot-color);
+}
+
+.tab-status-dot.is-awaiting {
+  --dot-color: var(--status-awaiting);
+}
+
+.tab-status-dot::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border: 1.4px solid var(--dot-color);
+  border-radius: 50%;
+  opacity: 0.35;
+  animation: tab-status-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes tab-status-pulse {
+  50% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+/* 固定页签只显图标：状态改成图标右上角的小徽标，不再占标题的空间 */
+.tab.pinned .tab-status {
+  position: absolute;
+  top: 2px;
+  right: 1px;
+  width: 9px;
+  height: 9px;
+  flex-basis: auto;
+}
+
+.tab.pinned .tab-status-spinner {
+  width: 9px;
+  height: 9px;
+}
+
+.tab.pinned .tab-status-dot {
+  box-shadow: 0 0 0 1.5px var(--bg);
+}
+
+.tab.pinned .tab-status-dot::after {
+  inset: -2px;
+  border-width: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tab-status-spinner,
+  .tab-status-dot::after {
+    animation: none;
+  }
+}
+
+.spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.6px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+  flex: 0 0 12px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.new-tab,
+.settings-button,
+.split-button,
+.pane-new-tab {
+  align-self: center;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  /* 自绘标题栏里只有 .drag-strip 可拖，按钮必须显式排除 */
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.new-tab:hover,
+.settings-button:hover,
+.split-button:hover,
+.pane-new-tab:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.new-tab:focus-visible,
+.settings-button:focus-visible,
+.split-button:focus-visible,
+.pane-new-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* 分屏按钮：开启时用强调色 */
+.split-button {
+  width: 28px;
+}
+
+.split-button.is-on {
+  background: var(--bg-selected);
+  color: var(--accent);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.window-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* ---------------- 分屏：每个窗格一条自己的页签条（VSCode 编辑器组） ---------------- */
+
+.pane-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.pane-tabbar {
+  position: absolute;
+  height: var(--tabbar-height);
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--border);
+  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+/* 只有最右上那条页签条要给 WCO 窗口控件（最小化/最大化/关闭）留位置 */
+:root[data-titlebar="overlay"] .pane-tabbar.with-window-tools {
+  padding-left: calc(6px + env(titlebar-area-x, 0px));
+  padding-right: max(
+    calc(6px + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)),
+    146px
+  );
+}
+
+.pane-tabbar .tabs {
+  flex: 0 1 auto;
+}
+
+.pane-tabbar.is-top .drag-strip {
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+/* 非焦点窗格的 active 页签用淡线，焦点窗格才用强调色（无额外边框，保持单纯） */
+.pane-tabbar:not(.is-focused) .tab.active::after {
+  background: var(--border);
+}
+
+.pane-new-tab {
+  align-self: center;
+  flex: none;
+}
+
+/* ---------------- 拖动页签时的投放区 ---------------- */
+
+.drag-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  pointer-events: auto;
+}
+
+.drop-zone {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 2px dashed var(--border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+  overflow: hidden;
+}
+
+.drop-zone.is-over {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--bg-selected) 80%, transparent);
+  color: var(--text);
+}
+
+.drop-zone-title,
+.drop-ghosts {
+  pointer-events: none;
+}
+
+.drop-ghosts {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 92%;
+}
+
+.drop-ghost {
+  max-width: 120px;
+  padding: 3px 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.8;
+}
+
+.drop-edge {
+  border-style: solid;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--bg-selected) 55%, transparent);
+}
+
+.drop-edge .drop-zone-title {
+  writing-mode: vertical-rl;
+  letter-spacing: 2px;
+}
+
+/* 滑块圆点用页签栏底色遮住横线；--bg 由 tabbar.ts 按 pi-web 主题写入 :root */
+.settings-button svg circle {
+  fill: var(--bg);
+}
+
+.status {
+  align-self: center;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.warn {
+  background: var(--warn);
+}
+
+.dot.err {
+  background: var(--err);
+}

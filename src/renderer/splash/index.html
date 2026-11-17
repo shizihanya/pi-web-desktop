@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>Pi Web Desktop</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="titlebar" aria-hidden="true"></div>
+    <main class="shell">
+      <header class="head">
+        <div class="brand">
+          <img class="logo" src="../assets/logo.png" alt="" />
+          <h1>Pi Web Desktop</h1>
+        </div>
+        <span class="badge" id="phase-badge">启动中</span>
+      </header>
+
+      <p class="headline" id="headline">正在启动本机 pi-web 服务…</p>
+      <p class="sub" id="subline">首次启动需要加载 Next.js，大约几秒钟。</p>
+
+      <div class="meta" id="meta" hidden>
+        <span id="meta-url"></span>
+        <span id="meta-version"></span>
+      </div>
+
+      <pre class="log" id="log" aria-live="polite"></pre>
+
+      <div class="actions">
+        <button id="btn-retry" type="button" class="primary" hidden>重试</button>
+        <button id="btn-log" type="button">打开日志</button>
+        <button id="btn-data" type="button">数据目录</button>
+        <button id="btn-quit" type="button" class="ghost">退出</button>
+      </div>
+    </main>
+    <script type="module" src="./splash.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,15 @@
+node_modules/
+out/
+dist/
+data/
+install.log
+*.log
+*.png
+!build/*.png
+.DS_Store
+Thumbs.db
+.pi/
+*.lnk
+.env
+.env.*
+!.env.example

@@ -1,0 +1,33 @@
+{
+  "name": "pi-web-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop shell for pi-web: auto-starts the local server and hosts it in tabs",
+  "license": "MIT",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "app": "electron-vite build && node scripts/run-app.mjs",
+    "shortcut": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-shortcut.ps1",
+    "shortcut:desktop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-shortcut.ps1 -Desktop",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "smoke": "node scripts/smoke.mjs",
+    "check:theme": "node scripts/check-theme-probe.mjs",
+    "check:status": "node scripts/check-tab-status-probe.mjs",
+    "check:composer": "node scripts/check-composer-expand.mjs",
+    "icons": "node scripts/build-icons.mjs",
+    "dist": "electron-vite build && electron-builder --win portable",
+    "dist:nsis": "electron-vite build && electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "@types/node": "^26.6.6",
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.7"
+  }
+}

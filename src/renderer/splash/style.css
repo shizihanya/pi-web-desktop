@@ -1,0 +1,185 @@
+:root {
+  color-scheme: dark;
+  /* 默认值是深色；主窗口会把缓存的 pi-web 主题色通过 query 覆盖这三个变量，
+     其余颜色从它们派生，浅色主题也能自动跟随。 */
+  --bg: #0b0e14;
+  --text: #dbe4f0;
+  --accent: #4c9aff;
+  --panel: color-mix(in srgb, var(--bg) 95%, var(--text));
+  --line: color-mix(in srgb, var(--bg) 86%, var(--text));
+  --muted: color-mix(in srgb, var(--bg) 34%, var(--text));
+  --ok: #3ddc97;
+  --warn: #f5a524;
+  --err: #ff6b6b;
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 自绘标题栏：给 Windows 窗口控件留出 40px 顶部条 */
+.titlebar {
+  display: none;
+}
+
+:root[data-titlebar="overlay"] .titlebar {
+  display: block;
+  height: 40px;
+  flex: 0 0 40px;
+  border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+/* 启动页现在是 1440×900 主窗口的第一屏：内容收成居中卡片，不再铺满整窗 */
+.shell {
+  flex: 0 1 auto;
+  width: min(760px, calc(100% - 48px));
+  max-height: calc(100% - 96px);
+  margin: auto;
+  padding: 24px 26px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 24px 70px rgb(0 0 0 / 0.24);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand h1 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.2px;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.logo {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+
+.badge {
+  font-size: 11px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: var(--panel);
+}
+
+.badge.ok {
+  color: var(--ok);
+  border-color: rgba(61, 220, 151, 0.4);
+}
+
+.badge.err {
+  color: var(--err);
+  border-color: rgba(255, 107, 107, 0.4);
+}
+
+.headline {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.meta {
+  display: flex;
+  gap: 14px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.log {
+  flex: 0 0 auto;
+  height: clamp(150px, 26vh, 260px);
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg) 92%, var(--text));
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--muted);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+button {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+  padding: 7px 14px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
+  font-weight: 600;
+}
+
+button.ghost {
+  margin-left: auto;
+  color: var(--muted);
+}

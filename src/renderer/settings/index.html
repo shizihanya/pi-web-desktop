@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>设置 — Pi Web Desktop</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="titlebar" aria-hidden="true"></div>
+    <header class="head">
+      <img class="logo" src="../assets/logo.png" alt="" />
+      <h1>设置</h1>
+      <span class="hint" id="data-dir"></span>
+    </header>
+
+    <main class="body">
+      <section class="card">
+        <h2>窗口</h2>
+        <label class="row">
+          <span>关闭窗口时</span>
+          <select id="close-behavior">
+            <option value="tray">最小化到托盘（推荐）</option>
+            <option value="quit">直接退出并停止服务</option>
+          </select>
+        </label>
+        <label class="row check">
+          <input type="checkbox" id="always-on-top" />
+          <span>窗口置顶</span>
+        </label>
+        <label class="row check" id="login-row">
+          <input type="checkbox" id="launch-at-login" />
+          <span>开机自启（启动后最小化到托盘）</span>
+        </label>
+        <label class="row check">
+          <input type="checkbox" id="restore-tabs" />
+          <span>启动时恢复上次的页签</span>
+        </label>
+      </section>
+
+      <section class="card">
+        <h2>服务</h2>
+        <label class="row">
+          <span>端口</span>
+          <input type="number" id="port" min="1" max="65535" />
+        </label>
+        <p class="note" id="port-note"></p>
+        <div class="kv">
+          <span>pi-web</span>
+          <code id="piweb-info">—</code>
+        </div>
+        <div class="kv">
+          <span>状态</span>
+          <code id="server-info">—</code>
+        </div>
+        <div class="row actions-inline update-row">
+          <button type="button" id="check-piweb-update">检查 pi-web 更新</button>
+          <span class="hint">发现新版本会自动：停止服务 → 更新全局 npm 包 → 重启服务（会中断当前页面，请勿在更新中退出应用）</span>
+        </div>
+        <pre class="update-log" id="piweb-update-log" hidden></pre>
+      </section>
+
+      <section class="card">
+        <h2>局域网 / 手机访问</h2>
+        <label class="row check">
+          <input type="checkbox" id="remote-enabled" />
+          <span>允许局域网内其他设备访问（绑定 0.0.0.0）</span>
+        </label>
+
+        <div class="remote" id="remote-box" hidden>
+          <label class="row">
+            <span>访问密码</span>
+            <input type="text" id="password" placeholder="至少 8 位" autocomplete="off" />
+          </label>
+          <div class="row actions-inline">
+            <button type="button" id="gen-password">生成随机密码</button>
+            <span class="hint" id="password-state"></span>
+          </div>
+
+          <div class="lan">
+            <div class="lan-head">
+              <span>在手机 / 其他电脑打开</span>
+              <button type="button" id="refresh-lan">刷新</button>
+            </div>
+            <ul id="lan-list"></ul>
+          </div>
+
+          <p class="warn">
+            ⚠ 密码只保护登录，流量仍是明文 HTTP。请只在信任的局域网使用；跨网/公网请用
+            Tailscale / WireGuard 或 HTTPS 反代。
+          </p>
+          <p class="note">
+            手机首次连不上时，多半是 Windows 防火墙拦截。<b>本应用不会修改你的防火墙设置</b>，
+            需要时你自己复制下面这条命令，在管理员 PowerShell 里执行一次：
+            <code id="firewall-cmd"></code>
+            <button type="button" class="copy" id="copy-firewall">复制</button>
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <span class="status" id="status"></span>
+      <span class="spacer"></span>
+      <button type="button" id="cancel">取消</button>
+      <button type="button" class="primary" id="save">保存</button>
+      <button type="button" class="primary" id="save-restart">保存并重启服务</button>
+    </footer>
+
+    <script type="module" src="./settings.ts"></script>
+  </body>
+</html>
