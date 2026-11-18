@@ -90,17 +90,54 @@ check(
   activity(computeTabActivity(snap, session(null), { running: true, awaiting: false }, 1_100)),
   { running: false, awaiting: false, unknown: false, source: "api", stale: false },
 );
+/* ------- API 可用时不与 DOM 状态合并（后台页签 DOM 滞后回归） ------- */
 check(
-  "DOM 逐行兜底与全局快照取并集",
+  "API 报告运行中，DOM 也运行中：结果为 running",
   activity(
     computeTabActivity(
       snap,
-      session("s4", { domAwaiting: true }),
+      session("s1", { domRunning: true }),
       { running: false, awaiting: false },
       1_100,
     ),
   ),
+  { running: true, awaiting: false, unknown: false, source: "api", stale: false },
+);
+check(
+  "API 报告已完成，DOM 仍显示运行中：结果必须为 idle",
+  activity(
+    computeTabActivity(
+      snap,
+      session("s4", { domRunning: true }),
+      { running: true, awaiting: false },
+      1_100,
+    ),
+  ),
+  { running: false, awaiting: false, unknown: false, source: "api", stale: false },
+);
+check(
+  "API 报告等待输入，DOM 仍显示运行中：结果必须为 awaiting",
+  activity(
+    computeTabActivity(
+      snap,
+      session("s2", { domRunning: true }),
+      { running: true, awaiting: false },
+      1_100,
+    ),
+  ),
   { running: false, awaiting: true, unknown: false, source: "api", stale: false },
+);
+check(
+  "API 报告已完成，DOM 仍显示等待输入：结果必须为 idle",
+  activity(
+    computeTabActivity(
+      snap,
+      session("s4", { domAwaiting: true }),
+      { running: false, awaiting: true },
+      1_100,
+    ),
+  ),
+  { running: false, awaiting: false, unknown: false, source: "api", stale: false },
 );
 
 /* ------------------------- 失败 / 未知 / 降级 ------------------------- */
@@ -117,12 +154,36 @@ check(
   { running: true, awaiting: false, unknown: false, source: "api", stale: true },
 );
 check(
-  "接口从未成功：用侧栏逐行状态兜底",
+  "接口从未成功：用侧栏逐行状态兜底（running）",
   activity(
     computeTabActivity(
       null,
       session("s1", { hasSelectedRow: true, domRunning: true }),
       { running: false, awaiting: false },
+      1_100,
+    ),
+  ),
+  { running: true, awaiting: false, unknown: false, source: "dom", stale: true },
+);
+check(
+  "接口从未成功：DOM 等待输入也能兜底",
+  activity(
+    computeTabActivity(
+      null,
+      session("s1", { hasSelectedRow: true, domAwaiting: true }),
+      { running: false, awaiting: false },
+      1_100,
+    ),
+  ),
+  { running: false, awaiting: true, unknown: false, source: "dom", stale: true },
+);
+check(
+  "接口从未成功：DOM 运行中不会误报 awaiting",
+  activity(
+    computeTabActivity(
+      null,
+      session("s1", { hasSelectedRow: true, domRunning: true, domAwaiting: false }),
+      { running: false, awaiting: true },
       1_100,
     ),
   ),

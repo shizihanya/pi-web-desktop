@@ -7,6 +7,8 @@
  *
  * 关键约束：
  *  - 全局快照在接口失败时保留「最后一次有效状态」，不能把一次失败当成 idle。
+ *  - 快照可用时完全以 API 的会话列表为准；DOM 状态只在 API 不可用时兜底，
+ *    避免后台页签 DOM 滞后（对话已完成但 DOM 仍转圈）把页签钉死在 running。
  *  - 完全没有依据（接口从未成功、DOM 兜底也不可用）时返回 unknown，
  *    由主进程保留上一轮状态，绝不把未知当成 idle。
  *  - 每个页签只用自己的 sessionId 去查全局数组，页签之间互不干扰。
@@ -97,14 +99,15 @@ export function computeTabActivity(
     snapshot !== null && snapshot.ready && !(snapshot.ok === false && now - snapshot.at > GLOBAL_STATUS_STALE_MS);
 
   if (usable) {
+    // 全局快照可用时完全以 API 状态为准：后台页签的 DOM 可能滞后
+    //（对话已结束但 DOM 仍显示转圈），与 API 做 OR 合并会让页签永远 running。
+    // domRunning / domAwaiting 只在 API 不可用时作为兜底（见下方 dom 分支）。
     const id = session.sessionId;
     const has = (list: string[]): boolean => !!id && list.indexOf(id) !== -1;
     return {
       running:
-        has(snapshot.runningSessionIds) ||
-        has(snapshot.subagentsActiveSessionIds) ||
-        session.domRunning,
-      awaiting: has(snapshot.awaitingInputSessionIds) || session.domAwaiting,
+        has(snapshot.runningSessionIds) || has(snapshot.subagentsActiveSessionIds),
+      awaiting: has(snapshot.awaitingInputSessionIds),
       unknown: false,
       source: "api",
       stale,
