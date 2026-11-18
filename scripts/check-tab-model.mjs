@@ -27,12 +27,72 @@ const tab = (pinned = false) => ({ pinned });
 const tabs = (...flags) => flags.map(tab);
 
 /* ------------------------- 创建 ------------------------- */
-check("无指定位置：新页签插在固定区之后", resolveInsertIndex(tabs(true, true, false), undefined, false) === 2);
-check("无固定页签：插到最左", resolveInsertIndex(tabs(false, false), undefined, false) === 0);
-check("指定位置被钳到 [pinnedCount, len]", resolveInsertIndex(tabs(true, false), 0, false) === 1);
+check("无指定位置：新建普通页签追加到末尾（固定区之后）", resolveInsertIndex(tabs(true, true, false), undefined, false) === 3);
+check("无固定页签：新建普通页签追加到末尾（不再插到最左）", resolveInsertIndex(tabs(false, false), undefined, false) === 2);
+check("新建固定页签：插在固定区末尾，仍在固定区内", resolveInsertIndex(tabs(true, true, false), undefined, true) === 2);
+check("指定位置被钳到 [pinnedCount, len]（显式 index 行为不变）", resolveInsertIndex(tabs(true, false), 0, false) === 1);
 check("指定位置越界上界被钳制", resolveInsertIndex(tabs(true, false), 99, false) === 2);
 check("新建的是固定页签：可以插到固定区", resolveInsertIndex(tabs(true, false, false), 1, true) === 1);
-check("非整数 index 回落到固定区之后", resolveInsertIndex(tabs(true, false), 1.7, false) === 1);
+check("非整数 index 回落到默认追加位置", resolveInsertIndex(tabs(true, false), 1.7, false) === 2);
+
+/* --------- 创建顺序：连续建 A、B、C，顺序不反转 --------- */
+{
+  // 模拟 createTab：按 resolveInsertIndex 拥入数组
+  const list = [];
+  const create = (pinned) => list.splice(resolveInsertIndex(list, undefined, pinned), 0, { pinned });
+  create(false); // A
+  create(false); // B
+  create(false); // C
+  check("连续创建 A、B、C 后顺序仍为 A、B、C", list.length === 3, JSON.stringify(list.length));
+  // 借助持久化走一遍保存 / 加载，验证恢复顺序不变
+  const dir = mkdtempSync(join(tmpdir(), "pi-web-desktop-tabs-order-"));
+  try {
+    saveTabs(dir, {
+      version: 1,
+      activeIndex: 0,
+      tabs: list.map((_, i) => ({ path: `/?session=${"ABC"[i]}`, title: "ABC"[i], pinned: false })),
+    });
+    const loaded = loadTabs(dir);
+    check("重启恢复：A、B、C 按原始顺序还原，不反转", loaded.tabs.map((t) => t.title).join("") === "ABC", JSON.stringify(loaded.tabs));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/* --------- 混合固定页签：恢复顺序保持不变，固定仍在普通左侧 --------- */
+{
+  const list = [];
+  const create = (pinned) => list.splice(resolveInsertIndex(list, undefined, pinned), 0, { pinned });
+  create(true); // P1
+  create(false); // A
+  create(false); // B
+  create(true); // P2
+  check("混合创建后固定区在前、内部按创建顺序", list.map((t) => (t.pinned ? "P" : "N")).join("") === "PPNN");
+  const dir = mkdtempSync(join(tmpdir(), "pi-web-desktop-tabs-mixed-"));
+  try {
+    // 真实应用里内存态固定页签永远在最左，tabs.json 也按此顺序保存
+    const canonical = [...list].sort((a, b) => Number(b.pinned) - Number(a.pinned));
+    saveTabs(dir, {
+      version: 1,
+      activeIndex: 0,
+      tabs: canonical.map((t, i) => ({ path: `/?session=${i}`, title: `${i}`, pinned: t.pinned })),
+    });
+    const loaded = loadTabs(dir);
+    // 模拟 TabManager.init()：按 tabs.json 顺序逐个 createTab（不传 index）
+    const restored = [];
+    for (const tab of loaded.tabs) {
+      restored.splice(resolveInsertIndex(restored, undefined, tab.pinned), 0, { pinned: tab.pinned });
+    }
+    check(
+      "混合固定 / 普通页签恢复顺序与关闭前完全一致",
+      restored.map((t) => (t.pinned ? "P" : "N")).join("") === "PPNN",
+      JSON.stringify(restored),
+    );
+    check("恢复后固定页签始终在普通页签左侧", restored.findIndex((t) => !t.pinned) >= restored.filter((t) => t.pinned).length);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 /* ------------------------- 关闭 ------------------------- */
 check("普通页签可以直接关闭", canCloseTab(false, false) === true);

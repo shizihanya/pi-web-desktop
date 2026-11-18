@@ -13,7 +13,7 @@ export interface OrderedTab {
   pinned: boolean;
 }
 
-/** 新页签插入点：固定区永远在最左，新页签默认插在固定区之后 */
+/** 新页签插入点：新建固定页签放固定区末尾；新建普通页签追加到整个列表末尾 */
 export function resolveInsertIndex(
   tabs: readonly OrderedTab[],
   index: number | undefined,
@@ -24,7 +24,7 @@ export function resolveInsertIndex(
     const min = pinned ? 0 : pinnedCount;
     return Math.min(Math.max(index, min), tabs.length);
   }
-  return pinnedCount;
+  return pinned ? pinnedCount : tabs.length;
 }
 
 /** 拖动排序的目标下标：不能跨过固定区 */
