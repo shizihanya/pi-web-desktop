@@ -6,9 +6,9 @@
  */
 import fs from "node:fs";
 
-const src = fs.readFileSync("src/main/tabs/tab-manager.ts", "utf8");
-const match = /const THEME_PROBE_SCRIPT = String\.raw`([\s\S]*?)`;/.exec(src);
-if (!match) throw new Error("THEME_PROBE_SCRIPT not found in src/main/tabs/tab-manager.ts");
+const src = fs.readFileSync("src/main/tabs/theme-probe.ts", "utf8");
+const match = /export const THEME_PROBE_SCRIPT = String\.raw`([\s\S]*?)`;/.exec(src);
+if (!match) throw new Error("THEME_PROBE_SCRIPT not found in src/main/tabs/theme-probe.ts");
 const code = match[1];
 
 try {

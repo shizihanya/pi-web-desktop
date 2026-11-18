@@ -358,12 +358,26 @@ npm run dev        # 开发（热更新）
 npm run app        # 构建并运行（贴近打包后行为）
 npm run typecheck  # tsc --noEmit
 npm run build      # 构建到 out/
-npm run smoke      # 上游契约冒烟（4 项断言）
-npm run check:theme # 主题探测脚本语法/返回值回归检查（不启动 Electron）
+npm run check      # 统一回归：typecheck + 契约 + 主题/状态/通知 + 分屏 + 兼容性（不启动 GUI）
+npm run check:all  # check + smoke（会启一个临时 pi-web 服务，慢一些）
+npm run smoke      # 上游契约冒烟（4 项断言，需要本机已全局安装 pi-web）
 npm run icons      # 由 build/logo.svg 重新生成窗口 ICO / 托盘图 / 渲染层 logo
 npm run shortcut   # 生成/修复快捷方式（维护开始菜单 AUMID 注册点、清理 Electron.lnk）
 npm run dist       # 绿色版 exe（打包已暂停，脚本保留）
 ```
+
+`npm run check` 串行跑 1 个 `typecheck` + 13 项回归（不重复执行同一检查）：
+`check:contracts` → `check:theme` → `check:status` → `check:status-model` →
+`check:status-manager` → `check:split` → `check:compat` → `check:notification` →
+`check:notification-bridge` → `check:theme-manager` → `check:lifecycle` →
+`check:tab-model` → `check:runtime-update`。它们都不启动 Electron、不联网；
+`smoke` 会真正拉起一个临时 pi-web 服务，所以单独放在 `check:all` 里。
+纯逻辑模块用 Node 22 的 `--experimental-strip-types` 直接加载 TS，无需先构建。
+
+> 文档命令一致性：`check:theme` / `check:status` 曾只在 `package.json` 里、README 只列了前者，
+> 现已对齐。README 里没有 `check:composer`，`package.json` 里也没有 —— 扩展输入框增强
+> 已在提交 `25d37d5` 移除（`composer-expand.ts` / `check-composer-expand.mjs` 一并删除），
+> 当前版本没有输入框注入，pi-web 原生输入框始终可用。
 
 目录速览：
 
@@ -387,8 +401,32 @@ $env:PI_WEB_DESKTOP_SPLIT_SHOT = ".pi/split.png"  # 可选：窗口截图
 npm run app
 ```
 
+### 上游兼容性与增强开关
+
+每次 `npm i -g @agegr/pi-web@latest` 后，先跑 `npm run check:all`，再按
+[上游兼容性清单](docs/development/pi-web-compatibility.md) 的人工回归清单过一遍。
+桌面端不修改 pi-web 源码 / node_modules / 构建产物，`check:contracts` 会只读扫描上游
+`.next` 构建，发现契约破坏时把对应增强标记为「不兼容」，而不是静默失效。
+
+四个增强各自独立检测、独立降级（`PI_WEB_DESKTOP_DEBUG_COMPAT=1` 可在 `server.log`
+看到全部结论），也都能用环境变量单独关闭，关闭后 pi-web 原生功能不受影响：
+
+| 环境变量（=1 关闭） | 影响 |
+| --- | --- |
+| `PI_WEB_DESKTOP_DISABLE_STATUS_PROBE` | 关闭页签状态探测（转圈 / 橙点 / 蓝点） |
+| `PI_WEB_DESKTOP_DISABLE_THEME_PROBE` | 关闭主题跟随（用缓存 / 系统明暗） |
+| `PI_WEB_DESKTOP_DISABLE_NOTIFICATION_PATCH` | 关闭 Windows 通知增强（只在 Windows 生效） |
+
+主题同步现在以**事件驱动**为主：页面里的只读 observer 发现主题变化时通知主进程立刻读取，
+5s 低频轮询只作兜底；读不到 CSS 变量时保留当前主题缓存，不影响 pi-web 显示。
+
+页面渲染进程崩溃时**不会**被自动销毁或自动重载，也不会停掉 pi-web 服务：页签和会话 URL
+都保留，页签栏出现「↻ 重新加载」，右键菜单变成「重新加载崩溃页面」。点击后先确认服务
+仍应答，再用保存的会话 URL 恢复，并自动重装全部桌面增强脚本。
+
 想看深入内容：
 
+- [上游兼容性清单与升级回归](docs/development/pi-web-compatibility.md)
 - [方案分析与上游契约](docs/ANALYSIS.md)
 - [开发计划与里程碑](docs/PLAN.md)
 - [自测清单（打包前逐条过）](docs/TESTING.md)

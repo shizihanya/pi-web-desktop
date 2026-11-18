@@ -65,6 +65,9 @@ export interface TabInfo {
   pinned: boolean;
   loading: boolean;
   status: TabStatus;
+  /** 渲染进程崩溃：页签保留、会话 URL 保留，提供显式重新加载入口（可选字段，老数据兼容） */
+  crashed?: boolean;
+  crashReason?: string | null;
 }
 
 export interface ThemeSnapshot {
@@ -100,6 +103,8 @@ export interface TabbarApi {
   move(id: string, index: number): Promise<void>;
   setPinned(id: string, pinned: boolean): Promise<void>;
   showMenu(id: string, x: number, y: number): Promise<void>;
+  /** 重新加载崩溃的页签（先验证服务仍可用，再用保存的会话 URL 恢复） */
+  reloadCrashed(id: string): Promise<boolean>;
   /** 打开外壳设置窗口（页签栏右侧的设置按钮） */
   openSettings(): Promise<void>;
   /* ---- 分屏（VSCode 式「页签分组」） ---- */
@@ -139,6 +144,7 @@ export const TAB_IPC = {
   move: "tabs:move",
   setPinned: "tabs:set-pinned",
   showMenu: "tabs:menu",
+  reloadCrashed: "tabs:reload-crashed",
   openSettings: "tabs:open-settings",
   changedEvent: "tabs:changed",
   setSplit: "tabs:set-split",

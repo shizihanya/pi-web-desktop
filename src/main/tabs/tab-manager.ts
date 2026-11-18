@@ -24,88 +24,45 @@ import {
 } from "../../shared/split";
 import { defaultSymbolColor, setTitleBarColors, TITLEBAR_HEIGHT, toOpaqueHex } from "../titlebar";
 import {
-  TAB_STATUS_PROBE_SCRIPT,
-  TAB_STATUS_READ_SCRIPT,
+  GLOBAL_STATUS_PROBE_SCRIPT,
+  TAB_SESSION_PROBE_SCRIPT,
   type TabStatusProbe,
 } from "./tab-status";
+import { TabStatusManager, type StatusSource } from "./tab-status-manager";
+import { CompatibilityTracker } from "./compat";
+import { NotificationBridge } from "./notification-bridge";
+import { ThemeManager } from "./theme-manager";
+import {
+  INITIAL_TAB_LIFECYCLE,
+  beginRecovery,
+  canRecover,
+  crashTitle,
+  failRecovery,
+  isCrashed,
+  onDidFinishLoad,
+  onDidStartLoading,
+  onRenderProcessGone,
+  markDestroyed,
+  type TabLifecycleState,
+} from "./tab-lifecycle";
+import { isServing } from "../server/port";
+import {
+  canCloseTab,
+  clampActiveIndex,
+  moveTargetIndex,
+  pinnedReorderIndex,
+  resolveInsertIndex as computeInsertIndex,
+  toPersistedTabs,
+} from "./tab-model";
 import { loadTabs, saveTabs, type PersistedSplit } from "./tab-persistence";
-import { saveTheme } from "./theme-persistence";
 
 /** 页签栏高度（CSS 里的 --tabbar-height、shared/split.ts 里的 TABBAR_HEIGHT 必须一致） */
 export const TABBAR_HEIGHT = TITLEBAR_HEIGHT;
-
-/** 没有缓存（首次启动 / 缓存被删）时，回退到系统明暗 */
-function systemFallbackTheme(): ThemeSnapshot {
-  const scheme: "light" | "dark" = nativeTheme.shouldUseDarkColors ? "dark" : "light";
-  return { name: scheme, scheme, vars: {}, fromPage: false };
-}
 
 const SAVE_DEBOUNCE_MS = 300;
 /** 页签状态轮询间隔（和主题探测一样是主进程主动读，页面里不装常驻定时器）
  *  比 pi-web 自己的 2.5s 轮询快，尽量不漏掉短回答的 running→idle 跳变 */
 const STATUS_POLL_MS = 700;
-
-/**
- * pi-web 任务完成通知优先走 ServiceWorkerRegistration.showNotification()。
- * 实测 Electron/Windows 上这条路径会 resolve，但 Windows 通知历史里根本没有 toast；
- * 而 pi-web 的 y1() 一旦成功就直接返回 "service-worker"，不再回落 new Notification()。
- * 另外 WebContentsView 的 document.hasFocus() 在主窗口失焦后仍返回 true（Chrome 会变 false），
- * 会让 pi-web 的 y0() 判定「页面仍在前台」而根本不发通知。
- * 这段补丁做两件事：让 SW showNotification reject 回落到 window.Notification；
- * 把主窗口焦点状态同步成 __piDesktopWindowFocused，并让 document.hasFocus() 跟随它。
- * 同时包装 window.Notification：把当前页签（页面标题，即会话名/项目名）拼进通知标题，
- * 否则多项目同时跑时，通知只有「任务完成」看不出是哪个会话。
- * 不改 pi-web 文件，只在每次页面加载后注入；标记保证幂等。
- */
-const WINDOWS_NOTIFICATION_PATCH = String.raw`(() => {
-  try {
-    if (window.__piDesktopWindowFocused === undefined) {
-      window.__piDesktopWindowFocused = true;
-    }
-    if (!document.__piDesktopHasFocusPatch) {
-      const original = document.hasFocus.bind(document);
-      Object.defineProperty(document, "hasFocus", {
-        configurable: true,
-        writable: true,
-        value: function () {
-          return window.__piDesktopWindowFocused === false ? false : original();
-        },
-      });
-      Object.defineProperty(document, "__piDesktopHasFocusPatch", { value: true });
-    }
-    const proto = window.ServiceWorkerRegistration && window.ServiceWorkerRegistration.prototype;
-    if (proto && !proto.__piDesktopNotificationPatch) {
-      proto.showNotification = function () {
-        return Promise.reject(new Error("pi-web-desktop: force window.Notification fallback"));
-      };
-      Object.defineProperty(proto, "__piDesktopNotificationPatch", { value: true });
-    }
-    const OriginalNotification = window.Notification;
-    if (OriginalNotification && !window.__piDesktopNotificationWrapped) {
-      const tabTitle = function () {
-        try {
-          return (document.title || "").replace(/\s*[-\u2013\u2014]\s*Pi\s*Web\s*$/i, "").trim();
-        } catch (e) { return ""; }
-      };
-      class PiDesktopNotification extends OriginalNotification {
-        constructor(title, options) {
-          let finalTitle = typeof title === "string" ? title : "";
-          try {
-            const tab = tabTitle();
-            if (tab && finalTitle && finalTitle.indexOf(tab) === -1) {
-              finalTitle = tab + " — " + finalTitle;
-            } else if (tab && !finalTitle) {
-              finalTitle = tab;
-            }
-          } catch (e) {}
-          super(finalTitle, options);
-        }
-      }
-      window.Notification = PiDesktopNotification;
-      Object.defineProperty(window, "__piDesktopNotificationWrapped", { value: true });
-    }
-  } catch {}
-})()`;
 
 type ShortcutHandler = (event: Electron.Event, input: Electron.Input) => void;
 
@@ -137,6 +94,8 @@ interface Tab {
   pendingUnreadAt: number | null;
   /** 已经看过的那一轮未读，避免切走又切回时重复提示 */
   seenUnreadAt: number | null;
+  /** Loading / Ready / Crashed / Recovering / Destroyed */
+  lifecycle: TabLifecycleState;
 }
 
 export interface TabManagerOptions {
@@ -177,20 +136,89 @@ export class TabManager {
   private readonly windowShortcutHandler: ShortcutHandler;
   private activeId: string | null = null;
   private saveTimer: NodeJS.Timeout | null = null;
-  private themeTimer: NodeJS.Timeout | null = null;
   private statusTimer: NodeJS.Timeout | null = null;
-  private pollingStatus = false;
   private readonly debugStatus = Boolean(process.env.PI_WEB_DESKTOP_DEBUG_STATUS);
   /** 仅自测：不跑真实对话，依次演示四种页签状态，方便截图验收样式 */
   private readonly demoStatus = process.env.PI_WEB_DESKTOP_SELFTEST_STATUS === "1";
-  private theme: ThemeSnapshot;
   private lastChromeSignature = "";
   private destroyed = false;
+
+  /* ---------------- 功能级兼容性（每个增强独立检测/关闭/降级） ---------------- */
+  private readonly compat: CompatibilityTracker;
+  /** 每个页面注入都可独立关闭；关闭后只影响该增强，pi-web 原生功能照常 */
+  private readonly statusProbeEnabled = process.env.PI_WEB_DESKTOP_DISABLE_STATUS_PROBE !== "1";
+  private readonly themeProbeEnabled = process.env.PI_WEB_DESKTOP_DISABLE_THEME_PROBE !== "1";
+  private readonly notificationPatchEnabled =
+    process.platform === "win32" && process.env.PI_WEB_DESKTOP_DISABLE_NOTIFICATION_PATCH !== "1";
+  private readonly notifications: NotificationBridge;
+  private readonly themes: ThemeManager;
+
+  /* ---------------- 状态监控：TabStatusManager 负责共享快照 / 选源 / 计算 ---------------- */
+  private readonly statuses: TabStatusManager;
+
   private readonly onWindowFocus = (): void => this.syncWindowFocus(true);
   private readonly onWindowBlur = (): void => this.syncWindowFocus(false);
 
   constructor(private readonly options: TabManagerOptions) {
-    this.theme = options.initialTheme ?? systemFallbackTheme();
+    this.compat = new CompatibilityTracker({
+      onChange: (result) => {
+        if (result.level !== "compatible" || process.env.PI_WEB_DESKTOP_DEBUG_COMPAT) {
+          this.options.onDebug?.(`[compat] ${result.feature}: ${result.level} — ${result.reason}`);
+        }
+      },
+    });
+    this.themes = new ThemeManager({
+      dataDir: options.dataDir,
+      systemDark: nativeTheme.shouldUseDarkColors,
+      initialTheme: options.initialTheme,
+      onRefresh: () => void this.refreshTheme(),
+      onCompatibility: (verdict) => this.compat.set("themeProbe", verdict),
+      onDebug: (message) => this.options.onDebug?.(message),
+    });
+    this.notifications = new NotificationBridge({
+      enabled: this.notificationPatchEnabled,
+      checkOnlyWhenDisabled: process.platform === "win32",
+      contents: () => this.tabs.map((tab) => tab.view.webContents),
+      focusState: () => !this.options.win.isDestroyed() && this.options.win.isFocused(),
+      onVerdict: (verdict) => this.compat.set("notification", verdict),
+      onDebug: (message) => this.options.onDebug?.(message),
+    });
+    if (!this.notificationPatchEnabled) {
+      this.compat.set("notification", {
+        level: "disabled",
+        reason: "通知增强已关闭（非 Windows 或环境变量禁用）",
+      });
+    }
+    if (!this.statusProbeEnabled) {
+      this.compat.set("statusProbe", { level: "disabled", reason: "状态探测已由环境变量关闭" });
+    }
+    if (!this.themeProbeEnabled) {
+      this.compat.set("themeProbe", { level: "disabled", reason: "主题探测已由环境变量关闭" });
+    }
+    this.statuses = new TabStatusManager({
+      sources: () =>
+        this.tabs.map(
+          (tab): StatusSource => ({
+            key: tab.id,
+            get running() {
+              return tab.running;
+            },
+            get awaiting() {
+              return tab.awaiting;
+            },
+            isDestroyed: () => tab.view.webContents.isDestroyed(),
+            executeJavaScript: (code, gesture) =>
+              tab.view.webContents.executeJavaScript(code, gesture),
+          }),
+        ),
+      activeSourceKey: () => this.activeId,
+      onProbe: (key, probe) => {
+        const tab = this.tabs.find((item) => item.id === key);
+        return tab ? this.applyTabStatus(tab, probe) : false;
+      },
+      onChanged: () => this.notify(),
+      onCompatibility: (verdict) => this.compat.set("statusProbe", verdict),
+    });
     // 窗口尺寸变了要重排视图，并把新的窗格矩形同步给页签栏渲染层
     const relayout = (): void => {
       this.layout();
@@ -216,89 +244,44 @@ export class TabManager {
       for (const tab of persisted.tabs) {
         this.createTab(tab.path, { activate: false, pinned: tab.pinned, title: tab.title });
       }
-      const index = Math.min(Math.max(persisted.activeIndex, 0), this.tabs.length - 1);
+      const index = clampActiveIndex(persisted.activeIndex, this.tabs.length);
       this.activate(this.tabs[index].id);
       this.restoreSplit(persisted.split, index);
     } else {
       this.createTab("/");
     }
-    // pi-web 切主题时不会发事件给我们，只能自己定期读一下（只读，不改页面）
-    this.themeTimer = setInterval(() => void this.refreshTheme(), 1_000);
-    this.themeTimer.unref?.();
-    void this.refreshTheme();
+    // 主题：事件驱动（页面 observer → console 信号）+ 5s 低频兜底轮询
+    if (this.themeProbeEnabled) this.themes.start();
 
-    // 页签状态（等待回答 / 回答完毕未查看）：主进程统一轮询所有页签的探测脚本
-    this.statusTimer = setInterval(() => void this.refreshTabStatuses(), STATUS_POLL_MS);
-    this.statusTimer.unref?.();
-    void this.refreshTabStatuses();
+    // 页签状态：每轮只让一个页面请求全局接口，其余页面只读自己的 sessionId
+    if (this.statusProbeEnabled) {
+      this.statusTimer = setInterval(() => void this.refreshTabStatuses(), STATUS_POLL_MS);
+      this.statusTimer.unref?.();
+      void this.refreshTabStatuses();
+    }
   }
 
-  /**
-   * 读取 pi-web 当前主题的真实 CSS 变量。
-   * 不写死配色表：pi-web 新增/自定义主题时，页签栏与窗口控件会自动跟随。
-   */
+  /** 主题变化入口：读取 / 缓存交给 ThemeManager，这里只做布局与通知 */
   async refreshTheme(): Promise<void> {
-    if (this.destroyed) return;
-    const wc = this.activeContents();
-    if (!wc || wc.isDestroyed()) return;
-    const debug = Boolean(process.env.PI_WEB_DESKTOP_DEBUG_THEME);
-    try {
-      const value = (await wc.executeJavaScript(THEME_PROBE_SCRIPT, true)) as string;
-      const payload = JSON.parse(value) as ThemeProbeResult;
-      if (payload.error) throw new Error(payload.error);
-      const scheme: "light" | "dark" = payload.scheme === "dark" ? "dark" : "light";
-      const vars: Record<string, string> = {};
-      for (const [key, raw] of Object.entries(payload.vars ?? {})) {
-        if (key.startsWith("--") && typeof raw === "string" && raw.trim()) {
-          vars[key] = raw.trim();
-        }
-      }
-      const next: ThemeSnapshot = {
-        name: typeof payload.name === "string" && payload.name ? payload.name : scheme,
-        scheme,
-        vars,
-        fromPage: payload.fromPage === true && Object.keys(vars).length >= 3,
-      };
-      // 读不到页面变量（页面还在加载 / 不是 pi-web 页面 / 上游换了变量名）：
-      // 一律保留当前主题，不回落、不通知渲染层，避免冷启动闪一下浅色
-      if (!next.fromPage) {
-        this.applyChromeTheme();
-        return;
-      }
-
-      const changed = JSON.stringify(next) !== JSON.stringify(this.theme);
-      if (changed) {
-        this.theme = next;
-        // 窗格边框也跟着主题换色
-        this.layout();
-        saveTheme(this.options.dataDir, next);
-        if (debug) {
-          this.options.onDebug?.(
-            `[theme] 切换为 ${next.name}（${next.scheme}，来自页面 ${Object.keys(vars).length} 个变量，已缓存）`,
-          );
-        }
-        this.notify();
-      }
-      this.applyChromeTheme();
-    } catch (error) {
-      if (debug) {
-        const simple = await wc
-          .executeJavaScript("1 + 1", true)
-          .then((v) => `executeJavaScript 可用（1+1=${v}）`)
-          .catch((e: unknown) => `连 1+1 都失败：${String(e)}`);
-        this.options.onDebug?.(`[theme] 读取失败：${String(error)}；${simple}`);
-      }
+    if (this.destroyed || !this.themeProbeEnabled) return;
+    const changed = await this.themes.refresh(this.activeContents());
+    if (changed) {
+      // 窗格边框也跟着主题换色
+      this.layout();
+      this.notify();
     }
+    this.applyChromeTheme();
   }
 
   /** 把主题色同步到自绘标题栏的窗口控件和窗口底色 */
   private applyChromeTheme(): void {
     if (!this.options.customTitleBar || this.options.win.isDestroyed()) return;
-    const bg = toOpaqueHex(this.theme.vars["--bg"], this.theme.scheme);
+    const theme = this.themes.current;
+    const bg = toOpaqueHex(theme.vars["--bg"], theme.scheme);
     const fg = toOpaqueHex(
-      this.theme.vars["--text"],
-      this.theme.scheme,
-      defaultSymbolColor(this.theme.scheme),
+      theme.vars["--text"],
+      theme.scheme,
+      defaultSymbolColor(theme.scheme),
     );
     const signature = `${bg}|${fg}`;
     if (signature === this.lastChromeSignature) return;
@@ -320,19 +303,16 @@ export class TabManager {
    * 让页面里的 document.hasFocus() 与 Chrome 行为一致。
    */
   syncWindowFocus(focused = !this.options.win.isDestroyed() && this.options.win.isFocused()): void {
-    const script = `window.__piDesktopWindowFocused = ${focused ? "true" : "false"};`;
-    for (const tab of this.tabs) {
-      const contents = tab.view.webContents;
-      if (contents.isDestroyed()) continue;
-      void contents.executeJavaScript(script, true).catch(() => {});
-    }
-    if (process.env.PI_WEB_DESKTOP_DEBUG_NOTIFY) {
-      this.options.onDebug?.(`[notify] 窗口焦点同步：${focused ? "focused" : "blurred"}`);
-    }
+    this.notifications.syncFocus(
+      this.tabs.map((tab) => tab.view.webContents),
+      focused,
+    );
   }
 
   /** 服务恢复后把所有页签重新加载一遍 */
   reloadAll(): void {
+    // 服务重启后页面 realm 会重建：全局快照与请求源必须重新初始化
+    this.statuses.reset();
     for (const tab of this.tabs) {
       if (!tab.view.webContents.isDestroyed()) tab.view.webContents.reload();
     }
@@ -343,7 +323,7 @@ export class TabManager {
       tabs: this.tabs.map((tab) => this.toInfo(tab)),
       activeId: this.activeId,
       baseUrl: this.options.baseUrl,
-      theme: this.theme,
+      theme: this.themes.current,
       customTitleBar: this.options.customTitleBar === true,
       split: {
         groups: this.groups.map((group) => ({
@@ -398,6 +378,7 @@ export class TabManager {
       awaiting: false,
       pendingUnreadAt: null,
       seenUnreadAt: null,
+      lifecycle: { ...INITIAL_TAB_LIFECYCLE },
     };
 
     const wc = view.webContents;
@@ -405,31 +386,22 @@ export class TabManager {
     // 点进哪个窗格，哪个窗格就是「当前窗格」：Ctrl+W / Ctrl+R / 缩放等都作用于它
     wc.on("focus", () => this.noteGroupFocus(tab.id));
 
-    // 页签状态探测：只读页面自己的接口 / URL / 侧栏选中行（刻意不读全局 localStorage）。
-    // 页面 reload / 切会话后 realm 会重建，所以 dom-ready 与 did-finish-load 各补一次（脚本自身幂等）。
-    const installStatusProbe = (): void => {
-      if (wc.isDestroyed()) return;
-      void wc.executeJavaScript(TAB_STATUS_PROBE_SCRIPT, true).catch(() => {});
-    };
-    wc.on("dom-ready", installStatusProbe);
-    wc.on("did-finish-load", installStatusProbe);
-
-    // Windows 下 pi-web 的 SW 通知不会出 toast，强制回落到 window.Notification。
-    // 页面 reload / 切会话后 realm 会重建，所以 dom-ready 与 did-finish-load 各补一次。
-    if (process.platform === "win32") {
-      let debugLogged = false;
-      const installFallback = (): void => {
+    // 页面 realm 重建（reload / 切会话）后要重装；两个脚本都幂等。
+    // 全局状态脚本只装、不自己发请求：只有被主进程选为「状态源」的页面才会真的 fetch，
+    // 会话脚本纯只读（URL / 侧栏选中行），刻意不读共享的 pi-web:unread-session-ids。
+    if (this.statusProbeEnabled) {
+      const installStatusProbes = (): void => {
         if (wc.isDestroyed()) return;
-        void wc.executeJavaScript(WINDOWS_NOTIFICATION_PATCH, true).catch(() => {});
-        this.syncWindowFocus();
-        if (!debugLogged && process.env.PI_WEB_DESKTOP_DEBUG_NOTIFY) {
-          debugLogged = true;
-          this.options.onDebug?.("[notify] 已注入通知回落 + 窗口焦点同步补丁");
-        }
+        void wc.executeJavaScript(TAB_SESSION_PROBE_SCRIPT, true).catch(() => {});
+        void wc.executeJavaScript(GLOBAL_STATUS_PROBE_SCRIPT, true).catch(() => {});
       };
-      wc.on("dom-ready", installFallback);
-      wc.on("did-finish-load", installFallback);
+      wc.on("dom-ready", installStatusProbes);
+      wc.on("did-finish-load", installStatusProbes);
     }
+
+    // 通知增强 / 主题观察器各自独立安装，互不阻断
+    this.notifications.attach(wc);
+    if (this.themeProbeEnabled) this.themes.attach(wc);
 
     // pi-web 的「在新标签页打开」/导出等都会走 window.open —— 这里接管成 App 内页签
     wc.setWindowOpenHandler(({ url: target }) => {
@@ -467,7 +439,8 @@ export class TabManager {
     });
 
     wc.on("did-start-loading", () => {
-      tab.loading = true;
+      tab.lifecycle = onDidStartLoading(tab.lifecycle);
+      if (!isCrashed(tab.lifecycle)) tab.loading = true;
       this.notify();
     });
 
@@ -478,21 +451,44 @@ export class TabManager {
       void this.refreshTheme();
     });
 
-    wc.on("did-finish-load", () => void this.refreshTheme());
+    wc.on("did-finish-load", () => {
+      const before = tab.lifecycle.phase;
+      tab.lifecycle = onDidFinishLoad(tab.lifecycle);
+      if (before === "recovering" || before === "crashed") {
+        // realm 已重建：dom-ready / did-finish-load 会重装状态探测、通知、主题 observer，
+        // 状态请求源下一轮重新选，服务本身不受影响。
+        tab.loading = false;
+        tab.title = cleanTitle(wc.getTitle()) || "新页签";
+        this.statuses.noteSourceClosed(tab.id);
+        this.options.onDebug?.(`[lifecycle] 页面已恢复：${tab.path}`);
+      }
+      this.notify();
+      void this.refreshTheme();
+    });
 
     wc.on("did-navigate", () => this.refreshPath(tab));
-    wc.on("did-navigate-in-page", () => this.refreshPath(tab));
+    wc.on("did-navigate-in-page", () => {
+      this.refreshPath(tab);
+      // 页签内切换会话：立刻重算一次，不等下一轮轮询
+      void this.refreshTabStatuses();
+    });
 
     wc.on("render-process-gone", (_event, details) => {
+      // 只标记，不销毁页签、不自动重载、不停 pi-web 服务；保留 tab.path 里的会话 URL。
+      tab.lifecycle = onRenderProcessGone(tab.lifecycle, details.reason);
       tab.loading = false;
-      tab.title = `页面崩溃（${details.reason}）`;
+      tab.title = crashTitle(details.reason);
+      this.statuses.noteSourceClosed(tab.id);
+      this.options.onDebug?.(
+        `[lifecycle] 页面崩溃（${details.reason}）：保留页签与 ${tab.path}，等待用户显式重新加载`,
+      );
       this.notify();
     });
 
     this.options.win.contentView.addChildView(view);
     view.setVisible(false);
 
-    const insertAt = this.resolveInsertIndex(options.index, tab.pinned);
+    const insertAt = computeInsertIndex(this.tabs, options.index, tab.pinned);
     this.tabs.splice(insertAt, 0, tab);
     // 新页签属于一个窗格（默认当前焦点窗格），并排在该窗格页签条末尾
     const groupIndex = Math.min(
@@ -513,7 +509,7 @@ export class TabManager {
   closeTab(id: string, force = false): void {
     const index = this.tabs.findIndex((tab) => tab.id === id);
     if (index < 0) return;
-    if (this.tabs[index].pinned && !force) return;
+    if (!canCloseTab(this.tabs[index].pinned, force)) return;
     this.disposeTab(this.tabs[index], index);
   }
 
@@ -823,10 +819,7 @@ export class TabManager {
     const from = this.tabs.findIndex((tab) => tab.id === id);
     if (from < 0) return;
     const tab = this.tabs[from];
-    const pinnedCount = this.tabs.filter((item) => item.pinned).length;
-    const min = tab.pinned ? 0 : pinnedCount;
-    const max = tab.pinned ? Math.max(pinnedCount - 1, 0) : this.tabs.length - 1;
-    const to = Math.min(Math.max(targetIndex, min), max);
+    const to = moveTargetIndex(this.tabs, from, targetIndex);
     if (to === from) return;
     this.tabs.splice(from, 1);
     this.tabs.splice(to, 0, tab);
@@ -842,8 +835,7 @@ export class TabManager {
     this.tabs.splice(index, 1);
     tab.pinned = pinned;
     // 固定 → 放到固定区末尾；取消固定 → 放到非固定区开头；两者插入点相同
-    const pinnedCount = this.tabs.filter((item) => item.pinned).length;
-    this.tabs.splice(pinnedCount, 0, tab);
+    this.tabs.splice(pinnedReorderIndex(this.tabs), 0, tab);
     this.notify();
   }
 
@@ -890,10 +882,10 @@ export class TabManager {
         this.options.win.webContents.off("before-input-event", this.windowShortcutHandler);
       }
     }
-    if (this.themeTimer) clearInterval(this.themeTimer);
-    this.themeTimer = null;
+    this.themes.stop();
     if (this.statusTimer) clearInterval(this.statusTimer);
     this.statusTimer = null;
+    this.notifications.dispose();
     for (const tab of [...this.tabs]) {
       this.disposeTab(tab, 0, { keepWindow: true });
     }
@@ -924,7 +916,10 @@ export class TabManager {
       { type: "separator" },
       ...splitItems,
       { type: "separator" },
-      { label: "重新加载", click: () => tab.view.webContents.reload() },
+      {
+        label: isCrashed(tab.lifecycle) ? "重新加载崩溃页面" : "重新加载",
+        click: () => void this.reloadCrashed(id),
+      },
       { label: "复制会话链接", click: () => clipboard.writeText(this.absoluteLink(tab.path)) },
       { label: "在新页签打开", click: () => this.duplicateTab(id) },
       { type: "separator" },
@@ -939,6 +934,11 @@ export class TabManager {
 
   private disposeTab(tab: Tab, index: number, options: { keepWindow?: boolean } = {}): void {
     this.tabs.splice(index, 1);
+    tab.lifecycle = markDestroyed(tab.lifecycle);
+    // 状态请求源被关闭：下一轮自动选别的页面；同时摘掉这个页面的通知监听
+    this.statuses.noteSourceClosed(tab.id);
+    this.notifications.detach(tab.view.webContents);
+    this.themes.detach(tab.view.webContents);
     try {
       this.options.win.contentView.removeChildView(tab.view);
     } catch {
@@ -1204,44 +1204,55 @@ export class TabManager {
       pinned: tab.pinned,
       loading: tab.loading,
       status: tab.status,
+      crashed: isCrashed(tab.lifecycle),
+      crashReason: tab.lifecycle.crashReason,
     };
+  }
+
+  /**
+   * 用户显式重新加载崩溃页签。
+   * 先验证服务端仍在应答（任何 HTTP 状态码都算存活，兼容 Basic Auth），
+   * 再用持久化的会话 URL 恢复；不盲目重载所有页面、不停服务、不销毁页签。
+   */
+  async reloadCrashed(id: string): Promise<boolean> {
+    const tab = this.tabs.find((item) => item.id === id);
+    if (!tab || tab.view.webContents.isDestroyed()) return false;
+    const wc = tab.view.webContents;
+    // 恢复进行中：忽略重复点击，避免第二次 loadURL
+    if (tab.lifecycle.phase === "recovering") return false;
+    if (!canRecover(tab.lifecycle)) {
+      // 未崩溃的页签走普通 reload（右键菜单的「重新加载」）
+      wc.reload();
+      return true;
+    }
+    const healthy = await isServing(this.options.baseUrl, 2_000);
+    tab.lifecycle = beginRecovery(tab.lifecycle);
+    tab.loading = true;
+    this.notify();
+    if (!healthy) {
+      tab.lifecycle = failRecovery(tab.lifecycle, "服务未就绪");
+      tab.loading = false;
+      this.notify();
+      this.options.onDebug?.("[lifecycle] 服务未应答，暂不重载崩溃页面");
+      return false;
+    }
+    const url = this.toAbsolute(tab.path);
+    if (!url) return false;
+    this.statuses.noteSourceClosed(tab.id);
+    void wc.loadURL(url);
+    return true;
   }
 
   /* ------------------------- 页签状态 ------------------------- */
 
-  /**
-   * 每秒读一次每个页签里注入的探测脚本。只在「状态真的变了」时 notify()，
-   * 避免把页签栏每秒重绘一遍、也不会反复写 tabs.json。
-   */
-  private async refreshTabStatuses(): Promise<void> {
-    if (this.destroyed || this.pollingStatus) return;
+  /** 定时器入口：共享快照 / 选源 / 每页签计算都交给 TabStatusManager */
+  private refreshTabStatuses(): void {
+    if (this.destroyed || !this.statusProbeEnabled) return;
     if (this.demoStatus) {
       this.cycleDemoStatus();
       return;
     }
-    this.pollingStatus = true;
-    let changed = false;
-    try {
-      for (const tab of [...this.tabs]) {
-        const wc = tab.view.webContents;
-        if (wc.isDestroyed()) continue;
-        let probe: TabStatusProbe | null = null;
-        try {
-          const raw = (await wc.executeJavaScript(TAB_STATUS_READ_SCRIPT, true)) as unknown;
-          if (typeof raw === "string" && raw !== "null") {
-            const parsed = JSON.parse(raw) as TabStatusProbe & { error?: string };
-            if (!parsed.error && typeof parsed.running === "boolean") probe = parsed;
-          }
-        } catch {
-          // 页面还在加载 / 正在导航：保留上一轮状态，不让指示器闪一下
-          continue;
-        }
-        if (probe) changed = this.applyTabStatus(tab, probe) || changed;
-      }
-    } finally {
-      this.pollingStatus = false;
-    }
-    if (changed) this.notify();
+    void this.statuses.refresh();
   }
 
   /** PI_WEB_DESKTOP_SELFTEST_STATUS=1：每 2.2s 换一种状态，方便不跑对话也能截图验收 */
@@ -1320,36 +1331,17 @@ export class TabManager {
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      saveTabs(this.options.dataDir, {
-        version: 1,
-        activeIndex: Math.max(this.tabs.findIndex((tab) => tab.id === this.activeId), 0),
-        tabs: this.tabs.map((tab) => ({ path: tab.path, title: tab.title, pinned: tab.pinned })),
-        split: {
-          groups: this.groups.map((group) =>
-            group.tabIds
-              .map((id) => this.tabs.findIndex((tab) => tab.id === id))
-              .filter((index) => index >= 0),
-          ),
-          active: this.groups.map((group) => {
-            if (!group.activeId) return null;
-            const index = this.tabs.findIndex((tab) => tab.id === group.activeId);
-            return index >= 0 ? index : null;
-          }),
+      saveTabs(
+        this.options.dataDir,
+        toPersistedTabs({
+          tabs: this.tabs,
+          activeId: this.activeId,
+          groups: this.groups,
           focused: this.focusedGroup,
           layout: this.effectiveLayout(),
-        },
-      });
+        }),
+      );
     }, SAVE_DEBOUNCE_MS);
-  }
-
-  private resolveInsertIndex(index: number | undefined, pinned: boolean): number {
-    const pinnedCount = this.tabs.filter((tab) => tab.pinned).length;
-    if (index !== undefined && Number.isInteger(index)) {
-      const min = pinned ? 0 : pinnedCount;
-      return Math.min(Math.max(index, min), this.tabs.length);
-    }
-    // 新页签插在固定区之后（固定区保持最左）
-    return pinnedCount;
   }
 
   /** 同源 → 绝对 URL；站外 → null（调用方交给系统浏览器） */
@@ -1493,89 +1485,6 @@ export class TabManager {
     return handler;
   }
 }
-
-interface ThemeProbeResult {
-  name?: string;
-  scheme?: string;
-  vars?: Record<string, string>;
-  fromPage?: boolean;
-  error?: string;
-}
-
-/**
- * 读取 pi-web 当前主题的「真实生效值」：dataset.theme 名称、color-scheme 明暗、
- * 以及 :root 上定义的 CSS 变量。全程只读 + try/catch，返回 JSON 字符串方便排查。
- * 用 String.raw 避免模板字符串把正则里的反斜杠吃掉。
- */
-const THEME_PROBE_SCRIPT = String.raw`(() => {
-  try {
-    const root = document.documentElement;
-    const cs = getComputedStyle(root);
-    const names = [
-      "--bg", "--bg-panel", "--bg-hover", "--bg-selected", "--border",
-      "--text", "--text-muted", "--text-dim", "--accent",
-      "--accent-hover", "--accent-contrast"
-    ];
-    const vars = {};
-    for (const key of names) {
-      const value = cs.getPropertyValue(key).trim();
-      if (value) vars[key] = value;
-    }
-
-    let name = (root && root.dataset ? root.dataset.theme : "") || "";
-    if (!name) {
-      try { name = (window.localStorage && localStorage.getItem("pi-theme")) || ""; } catch (e) {}
-      if (!name || name === "auto") {
-        name = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-      }
-    }
-
-    function toRgb(text) {
-      const s = String(text || "").trim();
-      let m = /^#([0-9a-f]{3,8})$/i.exec(s);
-      if (m) {
-        let h = m[1];
-        if (h.length === 3 || h.length === 4) h = h.split("").map(c => c + c).join("");
-        if (h.length === 6 || h.length === 8) {
-          return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-        }
-      }
-      m = /^rgba?\(([^)]+)\)$/i.exec(s);
-      if (m) {
-        const parts = m[1].split(/[,/\s]+/).filter(Boolean).map(Number);
-        // 全透明背景（例如 about:blank）不算有效颜色，交给 color-scheme / 系统判断
-        if (parts.length >= 4 && parts[3] === 0) return null;
-        if (parts.length >= 3) return [parts[0], parts[1], parts[2]];
-      }
-      return null;
-    }
-
-    // 明暗以「实际背景色」为准：color-scheme 只作兜底，避免主题类名残留时判断错
-    let scheme = "";
-    const bgRgb = toRgb(vars["--bg"] || getComputedStyle(document.body).backgroundColor);
-    if (bgRgb) {
-      const luma = 0.299 * bgRgb[0] + 0.587 * bgRgb[1] + 0.114 * bgRgb[2];
-      scheme = luma < 128 ? "dark" : "light";
-    }
-    if (!scheme) {
-      const cssScheme = cs.colorScheme || "";
-      if (cssScheme.indexOf("dark") === 0) scheme = "dark";
-      else if (cssScheme.indexOf("light") === 0) scheme = "light";
-    }
-    if (!scheme) {
-      scheme = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    }
-
-    return JSON.stringify({
-      name: name,
-      scheme: scheme,
-      vars: vars,
-      fromPage: Object.keys(vars).length >= 3
-    });
-  } catch (error) {
-    return JSON.stringify({ error: String(error && error.message ? error.message : error) });
-  }
-})()`;
 
 /** 页面标题形如 "会话名 - Pi Web"，页签上只留会话名 */
 function cleanTitle(title: string): string {

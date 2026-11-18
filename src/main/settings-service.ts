@@ -25,6 +25,12 @@ import {
   runningPiWebInstances,
 } from "./server/pi-web-update";
 import { resolveInstall } from "./server/resolve-pi-web";
+import {
+  planRollback,
+  rollbackNote,
+  withRollbackNote,
+  type RollbackOutcome,
+} from "./server/runtime-update";
 import type { ServerManager } from "./server/server-manager";
 
 const MIN_PASSWORD_LENGTH = 8;
@@ -128,6 +134,9 @@ export class SettingsService {
     let current: string | null = null;
     let latest: string | null = null;
     let installed: string | null = null;
+    /** 是否已经动过全局包 / 用哪个 node 跑 npm（失败回滚要用） */
+    let installStarted = false;
+    let nodePath: string | null = null;
 
     try {
       send("checking", "正在检查 pi-web 新版本…");
@@ -168,6 +177,8 @@ export class SettingsService {
       }
 
       send("installing", `正在更新全局包到 @agegr/pi-web@${target}…`, { current, latest });
+      installStarted = true;
+      nodePath = check.nodePath;
       const npm = await installPiWebUpdate(check.nodePath, target, (line) => {
         send("installing", `正在更新全局包到 v${target}…`, { current, latest, log: line });
       });
@@ -196,8 +207,20 @@ export class SettingsService {
       const state = this.deps.getServer()?.getState();
       if (!state || state.phase !== "ready") {
         const detail = state?.message ?? "服务未能就绪，请看启动页或 server.log";
-        const message = `已安装 v${installed}，但服务重启失败：${detail}`;
+        // 更新成功但启动失败：也要尝试恢复旧版本，不能只报「服务没起来」
+        const rollback = await this.rollbackAfterFailure(current, installed, installStarted, nodePath);
+        const message = withRollbackNote(
+          `已安装 v${installed}，但服务重启失败：${detail}`,
+          rollback.note,
+        );
         send("failed", message, { current, latest, installed });
+        if (rollback.outcome === "verified") {
+          try {
+            await this.deps.restartAll();
+          } catch (restoreError) {
+            this.deps.getServer()?.log(`[update] 回滚后恢复服务失败：${String(restoreError)}`);
+          }
+        }
         return {
           ok: false,
           status: "failed",
@@ -221,10 +244,12 @@ export class SettingsService {
         view: this.view(),
       };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const base = error instanceof Error ? error.message : String(error);
+      // 先恢复全局包（若被动过），再把服务拉回可用状态
+      const rollback = await this.rollbackAfterFailure(current, installed, installStarted, nodePath);
+      const message = withRollbackNote(base, rollback.note);
       send("failed", `更新失败：${message}`, { current, latest, installed });
       if (stopped) {
-        // 无论失败在哪一步，都把服务拉回旧版本（全局包可能还没动，也可能已装好）
         try {
           await this.deps.restartAll();
         } catch (restoreError) {
@@ -243,6 +268,43 @@ export class SettingsService {
     } finally {
       this.updateRunning = false;
     }
+  }
+
+  /**
+   * 只在全局包确实被动过、且更新前版本已知时尝试恢复，并且**验证**恢复后的版本。
+   * 验证不通过绝不声称「已回滚」，而是给可执行的手动命令。
+   */
+  private async rollbackAfterFailure(
+    current: string | null,
+    installed: string | null,
+    installStarted: boolean,
+    nodePath: string | null,
+  ): Promise<{ outcome: RollbackOutcome; note: string }> {
+    const plan = planRollback({
+      current,
+      target: null,
+      installed,
+      installStarted,
+      stopped: true,
+    });
+    if (!plan.needed) {
+      return { outcome: "not-needed", note: rollbackNote(plan, "not-needed") };
+    }
+    if (!plan.version || !nodePath) {
+      return { outcome: "install-failed", note: rollbackNote(plan, "install-failed") };
+    }
+    let outcome: RollbackOutcome = "install-failed";
+    try {
+      // 回滚最多等 90s，registry 不可用时不要卡住「更新失败」提示
+      const npm = await installPiWebUpdate(nodePath, plan.version, undefined, 90_000);
+      if (!npm.error && npm.code === 0) {
+        const after = resolveInstall(loadSettings());
+        outcome = after.version === plan.version ? "verified" : "verification-failed";
+      }
+    } catch (error) {
+      this.deps.getServer()?.log(`[update] 回滚异常：${String(error)}`);
+    }
+    return { outcome, note: rollbackNote(plan, outcome) };
   }
 
   async save(patch: SettingsPatch, restart: boolean): Promise<SaveResult> {

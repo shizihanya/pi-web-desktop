@@ -75,6 +75,9 @@ export function registerTabIpc(
   ipcMain.handle(TAB_IPC.showMenu, (_event, id: string, x: number, y: number) =>
     withTabs((tabs) => tabs.showMenu(id, x, y)),
   );
+  ipcMain.handle(TAB_IPC.reloadCrashed, (_event, id: string) =>
+    withTabs((tabs) => tabs.reloadCrashed(id)),
+  );
   ipcMain.handle(TAB_IPC.openSettings, () => {
     openSettings();
   });

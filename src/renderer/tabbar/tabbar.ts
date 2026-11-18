@@ -117,6 +117,22 @@ function createTabElement(tab: TabInfo, active: boolean, index: number): HTMLEle
   el.append(title);
   el.append(createStatus(tab));
 
+  // 渲染进程崩溃：页签与会话 URL 都保留，只给一个显式的「重新加载」入口
+  if (tab.crashed) {
+    el.classList.add("crashed");
+    const reload = document.createElement("span");
+    reload.className = "tab-crash-reload";
+    reload.textContent = "↻";
+    reload.title = `页面崩溃（${tab.crashReason ?? "unknown"}）· 点击重新加载`;
+    reload.setAttribute("role", "button");
+    reload.setAttribute("aria-label", reload.title);
+    reload.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void window.piWebTabs.reloadCrashed(tab.id);
+    });
+    el.append(reload);
+  }
+
   const close = document.createElement("span");
   close.className = "tab-close";
   close.textContent = "×";

@@ -217,6 +217,41 @@ body {
   color: var(--text);
 }
 
+/* 渲染进程崩溃：只在崩溃页签出现「重新加载」入口，页签与会话 URL 都保留 */
+.tab.crashed .tab-title {
+  color: var(--text-muted);
+}
+
+.tab-crash-reload {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  border-radius: 4px;
+  display: grid;
+  place-items: center;
+  color: #d97706;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tab-crash-reload:hover {
+  background: var(--bg-selected);
+  color: var(--text);
+}
+
+/* 固定页签只有图标宽度，把重载角标叠在右上角 */
+.tab.pinned .tab-crash-reload {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 12px;
+  height: 12px;
+  font-size: 10px;
+  background: var(--bg);
+  border-radius: 50%;
+}
+
 /*
  * 页签状态指示器（页签名后）：完全沿用 pi-web 侧栏会话列表的视觉语言。
  *  - running  = .sidebar-spin：一圈淡色弧线，--accent 着色，0.9s 匀速转

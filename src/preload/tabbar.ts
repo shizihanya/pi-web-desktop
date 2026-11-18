@@ -11,6 +11,7 @@ const CH = {
   move: "tabs:move",
   setPinned: "tabs:set-pinned",
   showMenu: "tabs:menu",
+  reloadCrashed: "tabs:reload-crashed",
   openSettings: "tabs:open-settings",
   changedEvent: "tabs:changed",
   setSplit: "tabs:set-split",
@@ -70,6 +71,7 @@ const api: TabbarApi = {
     ipcRenderer.invoke(CH.setPinned, id, pinned) as Promise<void>,
   showMenu: (id: string, x: number, y: number) =>
     ipcRenderer.invoke(CH.showMenu, id, x, y) as Promise<void>,
+  reloadCrashed: (id: string) => ipcRenderer.invoke(CH.reloadCrashed, id) as Promise<boolean>,
   openSettings: () => ipcRenderer.invoke(CH.openSettings) as Promise<void>,
   setSplit: (preset) => ipcRenderer.invoke(CH.setSplit, preset) as Promise<void>,
   splitWith: (id, orientation) =>

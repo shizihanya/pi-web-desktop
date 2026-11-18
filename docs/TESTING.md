@@ -64,6 +64,11 @@
 | D | 把 `%APPDATA%\Pi Web Desktop\settings.json` 改成非法 JSON | 用默认值启动，不崩 |
 | E | 开启局域网但清空密码后保存 | 拒绝保存并提示「请先设置访问密码」 |
 | F | 断网 / 拔网线 | 应用照常本机可用，局域网列表为空 |
+| G | 用任务管理器杀掉某个 pi-web 页签的渲染进程 | 页签**不消失**、不自动重载、服务不停；标题变成「页面崩溃（原因）」，页签栏出现「↻」，右键菜单为「重新加载崩溃页面」；点 ↻ 后恢复原会话，转圈/橙点等状态提示重新工作 |
+| H | 崩溃后先把 pi-web 服务停掉，再点 ↻ | 不盲目重载，回到 Crashed 并提示「服务未就绪」；服务恢复后可再次点击 |
+| I | 切 `mist` / `pine` 等主题，看 `server.log` 的 `[theme]` | 主题立即跟随（事件驱动），不再需要等 1s 轮询；5s 兜底轮询只在 observer 失效时起作用 |
+| J | 设置 → 检查 pi-web 更新，故意让 npm registry 不可用 | 报「无法读取最新版本」，服务仍在跑（没被停掉），终端里的 pi-web 仍可用 |
+| K | 更新成功但新版本启动失败 / npm 安装中途失败 | 设置页明确说明是否已把全局包恢复并验证到旧版本；未验证通过时给出手动 `npm i -g @agegr/pi-web@<旧版本>` 命令，不谎称「已回滚」 |
 
 ## 图标专项排查
 
@@ -95,11 +100,23 @@ $env:PI_WEB_DESKTOP_DEBUG_THEME = "1"          # 打印主题探测日志 + WCO 
 $env:PI_WEB_DESKTOP_DEBUG_NOTIFY = "1"         # 打印「已注入通知回落 + 窗口焦点同步补丁」及焦点同步日志
 $env:PI_WEB_DESKTOP_SELFTEST_STATUS = "1"     # 页签状态演示：第一个页签每 2.2s 依次显示 转圈/蓝点/橙点/无
 $env:PI_WEB_DESKTOP_DEBUG_STATUS = "1"        # 打印页签状态变化日志（[status] 标题: old → new）
+$env:PI_WEB_DESKTOP_DEBUG_COMPAT = "1"         # 打印全部功能级兼容性结论（[compat] 功能: 级别 — 原因）
+$env:PI_WEB_DESKTOP_DISABLE_STATUS_PROBE = "1" # 单独关闭页签状态探测（原生 pi-web 不受影响）
+$env:PI_WEB_DESKTOP_DISABLE_THEME_PROBE = "1"  # 单独关闭主题跟随
+$env:PI_WEB_DESKTOP_DISABLE_NOTIFICATION_PATCH = "1" # 单独关闭 Windows 通知增强
 $env:PI_WEB_DESKTOP_SELFTEST_THEME = "1"       # 自动切主题，验证页签栏跟随
 $env:PI_WEB_DESKTOP_SELFTEST_THEME_NAME = "mist" # 配合上面，可指定 pine/sand/zenburn…
 $env:PI_WEB_DESKTOP_SHOT_DELAY_MS = "11000"    # 配合截图，延迟到指定毫秒再拍
 $env:PI_WEB_DESKTOP_NATIVE_TITLEBAR = "1"      # 退回系统原生标题栏（不自绘）
 ```
+
+## 升级 pi-web 后
+
+先跑 `npm run check:all`（不启动 GUI 的静态/纯逻辑回归 + 契约冒烟），
+再按 [上游兼容性清单](development/pi-web-compatibility.md) 的 7 条人工回归清单过一遍。
+重点：4 个页签同时打开时 `/api/agent/running` 每轮只应有 **1 个**请求；
+关掉作为状态源的页签后状态提示仍能更新；服务重启后状态能重新初始化；
+更新失败时确认全局包版本确实恢复到了更新前的版本（不能只看服务能启动）。
 
 ## 发现问题的记录方式
 

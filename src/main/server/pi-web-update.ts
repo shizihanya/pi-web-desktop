@@ -148,11 +148,13 @@ export async function installPiWebUpdate(
   nodePath: string,
   version: string,
   onLine?: (line: string) => void,
+  /** 失败回滚用较短超时，避免 registry 不可用卡住用户 5 分钟 */
+  timeoutMs = INSTALL_TIMEOUT_MS,
 ): Promise<NpmResult> {
   const safe = parseStableVersion(version);
   if (!safe) return { code: null, output: "", stdout: "", error: `版本号不合法：${version}` };
   return runNpm(nodePath, ["install", "-g", `${PACKAGE}@${safe}`], {
-    timeoutMs: INSTALL_TIMEOUT_MS,
+    timeoutMs,
     onLine,
   });
 }
