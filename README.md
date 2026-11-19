@@ -180,7 +180,7 @@ npm run app
 - `Ctrl+T` / `Ctrl+W` / `Ctrl+R` / 缩放 / `F12` 只作用于当前窗格；可见的页签都算「已查看」，不会再亮未读点
 - 分组写进 `tabs.json`，**重启后自动恢复**；同一个页签只属于一个组，不会同时出现在两个窗格里
 
-> 当前版本是等分窗格，暂不支持拖动分隔条调宽度。布局公式集中在 `src/shared/split.ts` 的 `computePaneRects()` / `paneContentRect()`，主进程摆视图和界面算位置共用一份；以后加权重只需改这一处。
+> 布局已经换成 VSCode 编辑器组式的**嵌套 Split Tree**（`src/shared/split-model.ts`）：分隔节点各自保存方向与比例，窗格节点保存页签与活动页签，最多 4 个窗格。递归布局计算 `computeLayoutRects()` 只算一次，主进程拿它摆 `WebContentsView.setBounds`，页签栏渲染层直接拿同一份 `split.rects` / `split.sashes` 定位，不再各自算一套。`tabs.json` 升到 v2（保存树 + 稳定 pane id + ratio + 聚焦窗格），同时继续写旧 `split` 镜像，老配置自动迁移、损坏时安全降级为单窗格。分隔条拖动改比例与五方向拖拽分别在里程碑二 / 三接入。
 
 ### 为什么 `Ctrl+数字` 保持「切页签」
 
@@ -417,7 +417,8 @@ src/main/           主进程：服务托管、页签、托盘、菜单、设置
 src/preload/        三个 preload（启动页与页签栏共用 tabbar.js，设置用 settings.js；shell.js 为旧版独立启动页保留）
 src/renderer/       启动页、页签栏、设置页
 src/shared/types.ts 主进程与界面共享的类型与 IPC 通道名
-src/shared/split.ts 分屏常量 + computePaneRects()/paneContentRect()：主进程摆视图、界面算位置共用一份
+src/shared/split-model.ts 嵌套 Split Tree + 递归布局计算 + 预设/旧配置迁移（主进程与渲染层共用同一份结果）
+src/shared/split.ts 共享常量 / 预设 / SplitSnapshot 类型；旧的 computePaneRects() 仅保留给旧回归与兼容，运行时不再调用
 src/main/tabs/tab-manager.ts 页签与窗格分组（groups / focusedGroup / layout）
 src/main/tabs/draft-{model,persistence,workspace}.ts 独立输入工作区：草稿状态 / JSON 持久化 / 编排
 src/main/tabs/composer-bridge.ts 页面 realm 只读探针 / 复用原生发送按钮（不注入可见按钮）

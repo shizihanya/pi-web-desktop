@@ -1,13 +1,20 @@
 /**
- * 分屏布局的纯计算与共享常量。
+ * 分屏共享常量、预设与快照类型。
  *
- * 模型（对齐 VSCode 的「编辑器组」）：
- *   一个窗格 = 顶部一条自己的页签条（TABBAR_HEIGHT）+ 下面的内容区。
- *   单栏时只有 1 个窗格，页签条在窗口顶部、内容区从 y=40 开始 —— 和分屏前完全一样。
- *
- * 主进程用它给 WebContentsView.setBounds，页签栏渲染进程用它给每条页签条定位，
- * 两边共用同一套公式，避免像素对不上。这里不 import electron / Node API。
+ * 运行时布局已经改为 split-model.ts 的嵌套 Split Tree：computeLayoutRects() 递归算一次，
+ * 主进程用它给 WebContentsView.setBounds，渲染层拿同一份 split.rects / split.sashes 画页签条。
+ * 下面的 computePaneRects() 是旧版「平面等分」公式，只保留给旧回归用例与兼容参考，
+ * 运行时不再调用；paneContentRect() / topRightPaneIndex() 仍是共用的几何小工具。
+ * 这里不 import electron / Node API。
  */
+
+import {
+  MAX_PANES,
+  PANE_GAP,
+  TABBAR_HEIGHT,
+  type LayoutNode,
+  type SashRect,
+} from "./split-model.ts";
 
 /** 三个排布方向：等宽列、等高行、2 列宫格 */
 export type SplitLayout = "columns" | "rows" | "grid";
@@ -15,12 +22,19 @@ export type SplitLayout = "columns" | "rows" | "grid";
 /** 用户可直接选择的布局预设 */
 export type SplitPreset = "single" | "columns-2" | "rows-2" | "columns-3" | "grid-2x2";
 
-/** 页签条高度（必须与 src/main/titlebar.ts 的 TITLEBAR_HEIGHT 一致） */
-export const TABBAR_HEIGHT = 40;
-/** 窗格之间留出的间隔（露出窗口底色，像一条细分隔线） */
-export const PANE_GAP = 4;
-/** 一个 pi-web 页面已经比较吃宽度，最多 4 格 */
-export const MAX_PANES = 4;
+// 常量与新模型统一放在 split-model.ts，这里重导出保持既有 import 路径不变。
+export { MAX_PANES, PANE_GAP, TABBAR_HEIGHT } from "./split-model.ts";
+export { MIN_PANE_WIDTH, MIN_PANE_HEIGHT, SASH_HIT_SIZE, LAYOUT_SCHEMA_VERSION } from "./split-model.ts";
+export type {
+  LayoutNode,
+  PaneNode,
+  SplitNode,
+  SplitDirection,
+  LayoutResult,
+  SashRect,
+  PersistedLayout,
+  PersistedLayoutNode,
+} from "./split-model.ts";
 
 export interface PaneRect {
   x: number;
@@ -67,6 +81,9 @@ export function presetFor(count: number, layout: SplitLayout): SplitPreset | "cu
  *  grid:    2 列；2 格 = 左右两栏，3 格 = 上两格 + 下方通栏，4 格 = 2×2
  *
  * 最后一格吃掉除不尽的余数，保证右边 / 下边不会留缝。
+ *
+ * 注意：这是 v1 平面布局的公式，只由旧回归（check:split）调用；
+ * 运行时请用 split-model.ts 的 computeLayoutRects(root, bounds)。
  */
 export function computePaneRects(
   count: number,
@@ -151,7 +168,8 @@ export interface SplitGroupSnapshot {
 
 /** 渲染进程需要的分屏状态 */
 export interface SplitSnapshot {
-  /** 长度 = 窗格数；1 = 没分屏（此时渲染层走原来的单条页签栏） */
+  /** 长度 = 窗格数；1 = 没分屏（此时渲染层走原来的单条页签栏）
+   *  顺序 = Split Tree 的 DFS 顺序，与 paneIds / rects / sashes 一致 */
   groups: SplitGroupSnapshot[];
   /** 当前获得焦点的窗格下标 */
   focused: number;
@@ -160,4 +178,13 @@ export interface SplitSnapshot {
   preset: SplitPreset | "custom";
   /** 每个窗格的外框，由主进程算好直接给渲染层用（避免两边 DIP 计算有偏差） */
   rects: PaneRect[];
+  /* ---- Split Tree（主进程算好一次，渲染层原样使用，不另算一套） ---- */
+  /** 稳定的窗格 id，与 groups / rects 同序；不再用数组下标当 id */
+  paneIds: string[];
+  /** 当前聚焦窗格的稳定 id */
+  focusedPaneId: string;
+  /** 完整布局树（供预览 / 分隔条渲染；序列化友好） */
+  tree: LayoutNode;
+  /** 每个 SplitNode 一条分隔条，M2 起由渲染层画出来 */
+  sashes: SashRect[];
 }

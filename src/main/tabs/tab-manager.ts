@@ -14,16 +14,35 @@ import { DRAFT_MAX_WIDTH, sessionKeyFromPath, type DraftContext } from "./draft-
 import type { CompatVerdict } from "./compat";
 import { TAB_IPC } from "../../shared/types";
 import {
-  computePaneRects,
   MAX_PANES,
   paneContentRect,
   presetById,
   presetFor,
   SPLIT_PRESETS,
-  type PaneRect,
   type SplitLayout,
   type SplitPreset,
 } from "../../shared/split";
+import {
+  addEdgePane,
+  collectPanes,
+  computeLayoutRects,
+  createPane,
+  findPane,
+  fromPersistedTree,
+  layoutKind,
+  layoutSignature,
+  legacySplitToTree,
+  moveTab,
+  normalizeLayout,
+  paneCount,
+  presetToTree,
+  removePane,
+  splitPane,
+  type LayoutNode,
+  type LayoutResult,
+  type PaneNode,
+  type SplitDirection,
+} from "../../shared/split-model.ts";
 import { defaultSymbolColor, setTitleBarColors, TITLEBAR_HEIGHT, toOpaqueHex } from "../titlebar";
 import {
   GLOBAL_STATUS_PROBE_SCRIPT,
@@ -56,7 +75,7 @@ import {
   resolveInsertIndex as computeInsertIndex,
   toPersistedTabs,
 } from "./tab-model";
-import { loadTabs, saveTabs, type PersistedSplit } from "./tab-persistence";
+import { loadTabs, saveTabs, type PersistedTabs } from "./tab-persistence";
 
 /** 页签栏高度（CSS 里的 --tabbar-height、shared/split.ts 里的 TABBAR_HEIGHT 必须一致） */
 export const TABBAR_HEIGHT = TITLEBAR_HEIGHT;
@@ -68,11 +87,9 @@ const STATUS_POLL_MS = 700;
 
 type ShortcutHandler = (event: Electron.Event, input: Electron.Input) => void;
 
-/** 一个窗格 = VSCode 的一个编辑器组：它有哪些页签、当前显示哪个 */
-interface PaneGroup {
-  tabIds: string[];
-  activeId: string | null;
-}
+/** 一个窗格 = Split Tree 里的 PaneNode（它有哪些页签、当前显示哪个）。
+ *  保留别名让上层代码不必关心树节点的 type / id 字段。 */
+type PaneGroup = PaneNode;
 
 interface Tab {
   id: string;
@@ -128,17 +145,56 @@ export interface TabManagerOptions {
 export class TabManager {
   private readonly tabs: Tab[] = [];
 
-  /* ---------------- 分屏状态：页签分组（VSCode 编辑器组） ----------------
-   * groups.length = 窗格数，1 = 没分屏。每个组有自己的页签列表和一个正在显示的页签，
-   * 所有页签恰好属于一个组；单栏时只有一个组，行为与分屏功能加入前完全一致。
-   * activeId 恒等于 groups[focusedGroup].activeId（syncActive 维护），
+  /* ---------------- 分屏状态：Split Tree（唯一数据源） ----------------
+   * root 里的 PaneNode 就是原来的「编辑器组」：它拥有哪些页签、当前显示哪个。
+   * groups 只是 collectPanes(root) 的 DFS 投影（返回活节点，原地改 tabIds 会写回树），
+   * focusedGroup 只是 focusedPaneId 的下标视图；两者都不再单独保存一份状态。
+   * activeId 恒等于焦点 PaneNode 的 activeId（syncActive 维护），
    * 这样标题、主题探测、托盘勾选等原有逻辑都不用改。
    */
-  private groups: PaneGroup[] = [{ tabIds: [], activeId: null }];
-  private focusedGroup = 0;
-  private splitLayout: SplitLayout = "columns";
+  private root: LayoutNode = createPane();
+  private focusedPaneId: string = collectPanes(this.root)[0].id;
+  /** 一次递归布局计算的结果：layout() 与 snapshot() 共用同一份，禁止两边各算一套 */
+  private computed: { signature: string; width: number; height: number; result: LayoutResult } | null = null;
   /** 拖动页签期间临时隐藏内容视图，让渲染层的投放层露出来 */
   private dragging = false;
+
+  /** 窗格列表（DFS 顺序）：与 computeLayoutRects().panes 严格同序 */
+  private get groups(): PaneGroup[] {
+    return collectPanes(this.root);
+  }
+
+  /** 兼容既有代码：焦点窗格下标 ⇄ 稳定 pane id */
+  private get focusedGroup(): number {
+    const index = this.groups.findIndex((pane) => pane.id === this.focusedPaneId);
+    return index >= 0 ? index : 0;
+  }
+
+  private set focusedGroup(index: number) {
+    const panes = this.groups;
+    const at = Math.min(Math.max(Math.trunc(index) || 0, 0), Math.max(panes.length - 1, 0));
+    this.focusedPaneId = panes[at]?.id ?? "";
+  }
+
+  /** 布局计算（带缓存）：几何签名 / 窗口尺寸没变就复用上次结果 */
+  private syncLayout(): LayoutResult {
+    const [width, height] = this.options.win.isDestroyed() ? [1, 1] : this.options.win.getContentSize();
+    const signature = layoutSignature(this.root);
+    if (
+      !this.computed ||
+      this.computed.signature !== signature ||
+      this.computed.width !== width ||
+      this.computed.height !== height
+    ) {
+      this.computed = {
+        signature,
+        width,
+        height,
+        result: computeLayoutRects(this.root, { x: 0, y: 0, width, height }),
+      };
+    }
+    return this.computed.result;
+  }
   /** 主窗口 webContents 上的快捷键监听：destroy 时要摘掉，否则服务地址变化重建 TabManager 会重复绑定 */
   private readonly windowShortcutHandler: ShortcutHandler;
   private activeId: string | null = null;
@@ -301,7 +357,7 @@ export class TabManager {
       }
       const index = clampActiveIndex(persisted.activeIndex, this.tabs.length);
       this.activate(this.tabs[index].id);
-      this.restoreSplit(persisted.split, index);
+      this.restoreLayout(persisted, index);
     } else {
       this.createTab("/");
     }
@@ -374,6 +430,9 @@ export class TabManager {
   }
 
   snapshot(): TabsSnapshot {
+    // 主进程算一次，渲染层拿到的就是同一份结果（页签条 / 分隔条都不再自己算位置）
+    const layout = this.syncLayout();
+    const panes = this.groups;
     return {
       tabs: this.tabs.map((tab) => this.toInfo(tab)),
       activeId: this.activeId,
@@ -381,14 +440,15 @@ export class TabManager {
       theme: this.themes.current,
       customTitleBar: this.options.customTitleBar === true,
       split: {
-        groups: this.groups.map((group) => ({
-          tabIds: [...group.tabIds],
-          activeId: group.activeId,
-        })),
+        groups: panes.map((pane) => ({ tabIds: [...pane.tabIds], activeId: pane.activeId })),
         focused: this.focusedGroup,
         layout: this.effectiveLayout(),
-        preset: presetFor(this.groups.length, this.effectiveLayout()),
-        rects: this.paneRects(),
+        preset: presetFor(panes.length, this.effectiveLayout()),
+        rects: layout.panes.map((pane) => pane.rect),
+        paneIds: layout.panes.map((pane) => pane.id),
+        focusedPaneId: this.focusedPaneId,
+        tree: this.root,
+        sashes: layout.sashes,
       },
     };
   }
@@ -600,14 +660,34 @@ export class TabManager {
 
   /* ------------------------- 分屏 API ------------------------- */
 
-  /** 布局预设：单栏 / 左右双栏 / 上下双栏 / 三栏 / 四宫格 */
+  /** 布局预设：单栏 / 左右双栏 / 上下双栏 / 三栏 / 四宫格（全部转换成 Split Tree） */
   setSplitPreset(id: SplitPreset): void {
     if (this.destroyed) return;
     const preset = presetById(id);
     this.ensureTabCount(preset.count);
-    this.reflowGroups(preset.count);
-    this.splitLayout = preset.layout;
-    this.focusedGroup = Math.min(this.focusedGroup, this.groups.length - 1);
+    const before = this.groups;
+    const sameCount = before.length === preset.count;
+    // 只换方向（columns-2 ↔ rows-2）时保留用户已经拖好的分组
+    const kept = sameCount
+      ? before.map((pane) => ({ tabIds: [...pane.tabIds], activeId: pane.activeId }))
+      : [];
+    const focused = this.focusedGroup;
+    const activeId = this.activeId;
+    const shape = presetToTree(preset.id, sameCount ? [] : this.orderedTabIds());
+    if (sameCount) {
+      const panes = collectPanes(shape);
+      kept.forEach((entry, i) => {
+        if (!panes[i]) return;
+        panes[i].tabIds = entry.tabIds;
+        panes[i].activeId = entry.activeId;
+      });
+    } else if (preset.count === 1) {
+      // 回到单栏：原来正在看的页签继续显示
+      const pane = collectPanes(shape)[0];
+      if (activeId && pane?.tabIds.includes(activeId)) pane.activeId = activeId;
+    }
+    this.root = normalizeLayout(shape, this.tabs.map((tab) => tab.id)).root;
+    this.focusedGroup = Math.min(focused, this.groups.length - 1);
     this.afterGroupChange();
   }
 
@@ -624,27 +704,29 @@ export class TabManager {
       this.splitRightAuto(orientation);
       return;
     }
-    const src = this.groupIndexOf(target);
+    const srcIndex = this.groupIndexOf(target);
+    const src = this.groups[srcIndex];
+    if (!src) return;
     // 已经在某个窗格里显示着：不重复开窗格，只聚焦过去
-    if (this.groups[src].activeId === target && this.groups.length >= 2) {
-      this.focusGroup(src);
+    if (src.activeId === target && this.groups.length >= 2) {
+      this.focusGroup(srcIndex);
       return;
     }
     if (this.groups.length >= MAX_PANES) {
-      this.moveTabToGroup(target, (src + 1) % this.groups.length);
+      this.moveTabToGroup(target, (srcIndex + 1) % this.groups.length);
       return;
     }
-    // 源窗格只剩这一个页签时补一个新的，避免出现空窗格
-    if (this.groups[src].tabIds.length === 1) {
-      this.createTab("/", { activate: false, group: src });
+    // 源窗格只剩这一个页签时补一个新的，避免出现空窗格（原有 Tab 不关闭、不重载）
+    if (src.tabIds.length === 1) {
+      this.createTab("/", { activate: false, group: srcIndex });
     }
-    const fresh: PaneGroup = { tabIds: [], activeId: null };
-    this.groups.splice(Math.min(this.focusedGroup + 1, this.groups.length), 0, fresh);
-    if (this.groups.length === 2) this.splitLayout = orientation;
-    else if (orientation === "rows" && this.groups.length <= 3) this.splitLayout = "rows";
-    else if (this.groups.length === MAX_PANES) this.splitLayout = "grid";
-    this.moveTabIntoGroup(target, fresh);
-    this.focusedGroup = this.groups.indexOf(fresh);
+    const direction: SplitDirection = orientation === "rows" ? "vertical" : "horizontal";
+    // 在目标 Pane 自己的区域内拆：这样才表达得出「左一右二」这类不同方向的嵌套布局
+    const result = splitPane(this.root, src.id, direction, "after");
+    if (!result.changed) return;
+    this.root = result.root;
+    this.root = moveTab(this.root, target, result.newPaneId).root;
+    this.focusedPaneId = findPane(this.root, result.newPaneId)?.id ?? this.groups[0].id;
     this.afterGroupChange();
   }
 
@@ -667,20 +749,16 @@ export class TabManager {
     if (newId) this.splitWithTab(newId, orientation);
   }
 
-  /** 关掉一个窗格；页签本身不关闭，合并到相邻窗格 */
+  /** 关掉一个窗格；页签本身不关闭，合并到相邻窗格，父 SplitNode 自动 Collapse */
   closeGroup(index = this.focusedGroup): void {
     if (this.destroyed || this.groups.length <= 1) return;
-    const at = Math.min(Math.max(index, 0), this.groups.length - 1);
-    const [closed] = this.groups.splice(at, 1);
-    const dest = this.groups[Math.min(at, this.groups.length - 1)];
-    for (const tabId of closed.tabIds) {
-      if (!dest.tabIds.includes(tabId)) dest.tabIds.push(tabId);
-    }
-    if (!dest.activeId || !dest.tabIds.includes(dest.activeId)) {
-      dest.activeId = dest.tabIds[0] ?? null;
-    }
-    this.focusedGroup = Math.min(at, this.groups.length - 1);
-    if (this.groups.length === 1) this.splitLayout = "columns";
+    const panes = this.groups;
+    const at = Math.min(Math.max(index, 0), panes.length - 1);
+    const result = removePane(this.root, panes[at].id);
+    if (!result.changed) return;
+    this.root = result.root;
+    // 焦点落到接收了被删窗格页签的那个窗格
+    this.focusedPaneId = result.mergedIntoId ?? this.groups[0].id;
     this.afterGroupChange();
   }
 
@@ -704,12 +782,13 @@ export class TabManager {
     if (this.destroyed) return;
     // drop 会先于 dragend 到达：这里直接结束拖动态，让新布局立即生效
     this.dragging = false;
-    const target = this.groups[Math.min(Math.max(groupIndex, 0), this.groups.length - 1)];
+    const panes = this.groups;
+    const target = panes[Math.min(Math.max(groupIndex, 0), panes.length - 1)];
     if (!target) return;
-    const src = this.groups.find((group) => group.tabIds.includes(id));
+    const src = panes.find((pane) => pane.tabIds.includes(id));
     // 源窗格只剩这一个页签时，先把它和目标窗格当前显示的页签互换：
-    // 否则空窗格会被 VSCode 规则关掉，「分两个展示区域」一下就没了。
-    if (src && src !== target && src.tabIds.length === 1 && this.groups.length > 1) {
+    // 否则空窗格会被 RemovePane 规则关掉，「分两个展示区域」一下就没了。
+    if (src && src !== target && src.tabIds.length === 1 && panes.length > 1) {
       const borrow = target.activeId ?? target.tabIds[0] ?? null;
       if (borrow && borrow !== id) {
         target.tabIds = target.tabIds.filter((tabId) => tabId !== borrow);
@@ -718,12 +797,13 @@ export class TabManager {
         if (target.activeId === borrow) target.activeId = target.tabIds[0] ?? null;
       }
     }
-    this.moveTabIntoGroup(id, target, insertIndex);
-    this.focusedGroup = this.groups.indexOf(target);
+    // 上面直接改的是树里的活节点；moveTab 返回的新树保持所有 pane id 不变
+    this.root = moveTab(this.root, id, target.id, insertIndex).root;
+    this.focusedPaneId = findPane(this.root, target.id)?.id ?? this.groups[0].id;
     this.afterGroupChange();
   }
 
-  /** 拖到窗口最左 / 最右：新建一个窗格并放入该页签 */
+  /** 拖到窗口最左 / 最右：在整棵树外面套一层 SplitNode 并放入该页签 */
   splitTabToEdge(id: string, side: "left" | "right"): void {
     if (this.destroyed) return;
     this.dragging = false;
@@ -731,26 +811,28 @@ export class TabManager {
       this.moveTabToGroup(id, side === "left" ? 0 : this.groups.length - 1);
       return;
     }
-    const src = this.groups.find((group) => group.tabIds.includes(id));
+    const src = this.groups.find((pane) => pane.tabIds.includes(id));
     if (src && src.tabIds.length === 1 && this.groups.length === 1) {
       this.createTab("/", { activate: false, group: this.groups.indexOf(src) });
     }
-    const fresh: PaneGroup = { tabIds: [], activeId: null };
-    this.groups.splice(side === "left" ? 0 : this.groups.length, 0, fresh);
-    if (this.groups.length === 2) this.splitLayout = "columns";
-    else if (this.groups.length === MAX_PANES) this.splitLayout = "grid";
-    this.moveTabIntoGroup(id, fresh);
-    this.focusedGroup = this.groups.indexOf(fresh);
+    const result = addEdgePane(this.root, side);
+    if (!result.changed) return;
+    this.root = result.root;
+    this.root = moveTab(this.root, id, result.newPaneId).root;
+    this.focusedPaneId = findPane(this.root, result.newPaneId)?.id ?? this.groups[0].id;
     this.afterGroupChange();
   }
 
   newTabInGroup(index: number): void {
     if (this.destroyed) return;
-    const at = Math.min(Math.max(index, 0), this.groups.length - 1);
+    const panes = this.groups;
+    const at = Math.min(Math.max(index, 0), panes.length - 1);
+    const paneId = panes[at].id;
     const id = this.createTab("/", { activate: false, group: at });
     if (!id) return;
-    this.groups[at].activeId = id;
-    this.focusedGroup = at;
+    const pane = findPane(this.root, paneId);
+    if (pane) pane.activeId = id;
+    this.focusedPaneId = paneId;
     this.afterGroupChange();
   }
 
@@ -1007,16 +1089,15 @@ export class TabManager {
     }
     if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
 
-    // 从它所属的窗格里摘掉；窗格空了就关掉窗格（页签合并由 pruneGroups 处理）
-    for (const group of this.groups) {
-      group.tabIds = group.tabIds.filter((tabId) => tabId !== tab.id);
-      if (group.activeId === tab.id) group.activeId = null;
+    // 从它所属的 PaneNode 里摘掉；空窗格 / 失效 active / 单子节点由 normalizeLayout 统一整理
+    for (const pane of this.groups) {
+      pane.tabIds = pane.tabIds.filter((tabId) => tabId !== tab.id);
+      if (pane.activeId === tab.id) pane.activeId = null;
     }
 
     if (this.tabs.length === 0) {
-      this.groups = [{ tabIds: [], activeId: null }];
-      this.focusedGroup = 0;
-      this.splitLayout = "columns";
+      this.root = createPane();
+      this.focusedPaneId = this.groups[0].id;
       this.syncActive();
       if (options.keepWindow || this.destroyed) {
         this.notify();
@@ -1027,8 +1108,8 @@ export class TabManager {
       return;
     }
 
-    this.pruneGroups();
-    this.focusedGroup = Math.min(this.focusedGroup, this.groups.length - 1);
+    this.root = normalizeLayout(this.root, this.tabs.map((item) => item.id)).root;
+    this.focusedPaneId = findPane(this.root, this.focusedPaneId)?.id ?? this.groups[0].id;
     this.afterGroupChange();
   }
 
@@ -1046,8 +1127,9 @@ export class TabManager {
 
   /* ------------------------- 分屏内部 ------------------------- */
 
+  /** 布局类型由树里的 SplitNode 方向推导（单栏恒为 columns） */
   private effectiveLayout(): SplitLayout {
-    return this.groups.length > 1 ? this.splitLayout : "columns";
+    return this.groups.length > 1 ? layoutKind(this.root) : "columns";
   }
 
   private syncActive(): void {
@@ -1122,59 +1204,6 @@ export class TabManager {
     }
   }
 
-  /** 切成 N 个窗格：前 N 个页签各占一格，其余全部留在第一格 */
-  private reflowGroups(count: number): void {
-    const ordered = this.orderedTabIds();
-    if (count <= 1) {
-      const keep = this.activeId && ordered.includes(this.activeId) ? this.activeId : ordered[0];
-      this.groups = [{ tabIds: ordered, activeId: keep ?? null }];
-      this.focusedGroup = 0;
-      this.splitLayout = "columns";
-      return;
-    }
-    // 只换方向（columns-2 → rows-2）时保留用户已经拖好的分组
-    if (count === this.groups.length) return;
-    const heads = ordered.slice(0, count);
-    this.groups = Array.from({ length: count }, (_, i) => ({
-      tabIds: [heads[i]],
-      activeId: heads[i],
-    }));
-    for (const id of ordered.slice(count)) this.groups[0].tabIds.push(id);
-  }
-
-  /** 把页签移进指定组（用对象引用，避免源组被删后下标漂移） */
-  private moveTabIntoGroup(id: string, target: PaneGroup, insertIndex?: number): void {
-    if (!this.tabs.some((tab) => tab.id === id)) return;
-    const src = this.groups.find((group) => group.tabIds.includes(id));
-    if (!src) return;
-    src.tabIds = src.tabIds.filter((tabId) => tabId !== id);
-    if (src.activeId === id) src.activeId = src.tabIds[0] ?? null;
-    const at = Math.min(Math.max(insertIndex ?? target.tabIds.length, 0), target.tabIds.length);
-    target.tabIds.splice(at, 0, id);
-    target.activeId = id;
-    if (src !== target && src.tabIds.length === 0 && this.groups.length > 1) {
-      this.groups.splice(this.groups.indexOf(src), 1);
-    }
-  }
-
-  /** 关页签后：空组删掉、活动页签失效的补一个；至少保留一个组 */
-  private pruneGroups(): void {
-    for (let i = this.groups.length - 1; i >= 0; i -= 1) {
-      const group = this.groups[i];
-      if (group.tabIds.length === 0 && this.groups.length > 1) {
-        this.groups.splice(i, 1);
-        continue;
-      }
-      if (!group.activeId || !group.tabIds.includes(group.activeId)) {
-        group.activeId = group.tabIds[0] ?? null;
-      }
-    }
-    if (this.groups.length === 0) {
-      this.groups = [{ tabIds: this.tabs.map((tab) => tab.id), activeId: this.tabs[0]?.id ?? null }];
-    }
-    if (this.groups.length === 1) this.splitLayout = "columns";
-  }
-
   /** 单栏拖动排序后，让各组的页签条顺序跟着 tabs[] 走 */
   private reorderGroupsByTabs(): void {
     const owner = new Map<string, number>();
@@ -1186,70 +1215,62 @@ export class TabManager {
     }
   }
 
-  /** 重启后按 tabs.json 里存的下标恢复分组（页签 id 每次启动都会变） */
-  private restoreSplit(split: PersistedSplit | null | undefined, activeIndex: number): void {
-    if (!split || !Array.isArray(split.groups) || split.groups.length < 2) return;
-    const seen = new Set<string>();
-    const groups: PaneGroup[] = split.groups.slice(0, MAX_PANES).map((indices, i) => {
-      const ids: string[] = [];
-      for (const index of indices) {
-        const id = this.tabs[index]?.id;
-        if (id && !seen.has(id)) {
-          seen.add(id);
-          ids.push(id);
-        }
-      }
-      const activeIndexInTabs = split.active?.[i];
-      const activeId =
-        typeof activeIndexInTabs === "number" ? this.tabs[activeIndexInTabs]?.id : undefined;
-      return {
-        tabIds: ids,
-        activeId: activeId && ids.includes(activeId) ? activeId : (ids[0] ?? null),
-      };
-    });
-    for (const tab of this.tabs) {
-      if (!seen.has(tab.id)) {
-        seen.add(tab.id);
-        groups[0].tabIds.push(tab.id);
+  /** 重启恢复：优先 v2 Split Tree，其次迁移 v1 split；任何异常都安全降级为单窗格 */
+  private restoreLayout(persisted: PersistedTabs, activeIndex: number): void {
+    const ids = this.tabs.map((tab) => tab.id);
+    const idAt = (index: number): string | null => ids[index] ?? null;
+    let root: LayoutNode | null = null;
+    let focusedPaneId: string | null = null;
+
+    // loadTabs 已经校验过 layout.version；没有 layout 时退回旧版 groups/layout 迁移
+    if (persisted.layout) {
+      root = fromPersistedTree(persisted.layout.root, idAt);
+      focusedPaneId = persisted.layout.focusedPaneId;
+    } else if (persisted.split && persisted.split.groups.length >= 2) {
+      const migrated = legacySplitToTree(persisted.split, ids.length, idAt);
+      if (migrated) {
+        root = migrated.root;
+        focusedPaneId = migrated.focusedPaneId;
       }
     }
-    const valid = groups.filter((group) => group.tabIds.length > 0);
-    if (valid.length < 2) return;
-    this.groups = valid;
-    this.splitLayout =
-      split.layout === "rows" || split.layout === "grid" ? split.layout : "columns";
-    const activeTabId = this.tabs[activeIndex]?.id;
-    const focused = activeTabId
-      ? this.groups.findIndex((group) => group.activeId === activeTabId)
-      : -1;
-    this.focusedGroup =
-      focused >= 0 ? focused : Math.min(Math.max(split.focused, 0), this.groups.length - 1);
-    this.afterGroupChange();
-  }
+    if (!root) return; // 没有分屏数据：保持启动时的普通单窗格
 
-  /** 当前所有窗格的外框；同时给渲染层定位它自己的页签条 */
-  private paneRects(): PaneRect[] {
-    if (this.options.win.isDestroyed()) {
-      return computePaneRects(this.groups.length, this.effectiveLayout(), 1, 1);
+    this.root = normalizeLayout(root, ids).root;
+    if (paneCount(this.root) < 2) {
+      // 只剩一个 Pane → 自动恢复普通单窗格布局
+      this.focusedPaneId = this.groups[0].id;
+      this.afterGroupChange();
+      return;
     }
-    const [width, height] = this.options.win.getContentSize();
-    return computePaneRects(this.groups.length, this.effectiveLayout(), width, height);
+    this.focusedPaneId = findPane(this.root, focusedPaneId ?? "")?.id ?? this.groups[0].id;
+
+    // 持久化里的激活页签要显示在它所属的窗格里（活动页签语义不变）
+    const activeTabId = ids[activeIndex];
+    if (activeTabId) {
+      const owner = this.groups.find((pane) => pane.tabIds.includes(activeTabId));
+      if (owner) {
+        owner.activeId = activeTabId;
+        this.focusedPaneId = owner.id;
+      }
+    }
+    this.afterGroupChange(); // notify() → scheduleSave()：迁移成功后立即回写 v2
   }
 
-  /** 只显示每个窗格 active 的视图，bounds = 窗格外框去掉顶部那条页签条 */
+  /** 只显示每个窗格 active 的视图，bounds = 窗格外框去掉顶部那条页签条。
+   *  与 snapshot() 共用 syncLayout() 的同一份递归计算结果。 */
   private layout(): void {
     if (this.destroyed || this.dragging || this.options.win.isDestroyed()) return;
-    const rects = this.paneRects();
+    const layout = this.syncLayout();
     const [windowWidth] = this.options.win.getContentSize();
     for (const tab of this.tabs) tab.view.setVisible(false);
-    for (let i = 0; i < this.groups.length; i += 1) {
-      const id = this.groups[i].activeId;
-      if (!id) continue;
-      const tab = this.tabs.find((item) => item.id === id);
+    for (const { id: paneId, rect } of layout.panes) {
+      const activeId = findPane(this.root, paneId)?.activeId;
+      if (!activeId) continue;
+      const tab = this.tabs.find((item) => item.id === activeId);
       if (!tab) continue;
-      const content = paneContentRect(rects[i]);
+      const content = paneContentRect(rect);
       // 面板展开时只收窄贴着右边缘的内容视图，绝不浮在对话上面；
-      // paneRects()/snapshot().split.rects 保持原样，页签条与 WCO 窗口控件不位移。
+      // split.rects 保持原样，页签条与 WCO 窗口控件不位移。
       const available = Math.max(1, windowWidth - content.x - this.reservedRightWidth);
       tab.view.setBounds({ ...content, width: Math.max(1, Math.min(content.width, available)) });
       tab.view.setVisible(true);
@@ -1407,6 +1428,8 @@ export class TabManager {
           groups: this.groups,
           focused: this.focusedGroup,
           layout: this.effectiveLayout(),
+          tree: this.root,
+          focusedPaneId: this.focusedPaneId,
         }),
       );
     }, SAVE_DEBOUNCE_MS);

@@ -1,9 +1,11 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SplitLayout } from "../../shared/split";
+import { LAYOUT_SCHEMA_VERSION, type PersistedLayout, type PersistedLayoutNode } from "../../shared/split-model.ts";
 
 const FILE = "tabs.json";
-const VERSION = 1;
+/** v1 = 平面 groups；v2 = Split Tree。旧版文件照样能读，读出后由 TabManager 迁移并回写。 */
+const VERSION = 2;
 
 /** 分屏布局按页签下标保存（端口/页签 id 变了也能恢复） */
 export interface PersistedSplit {
@@ -26,7 +28,10 @@ export interface PersistedTabs {
   version: number;
   activeIndex: number;
   tabs: PersistedTab[];
+  /** v1 平面布局；v2 仍然写一份，保证旧版本 app 降级后也能读 */
   split?: PersistedSplit | null;
+  /** v2 嵌套布局树 */
+  layout?: PersistedLayout | null;
 }
 
 function tabsFile(dataDir: string): string {
@@ -70,22 +75,39 @@ export function loadTabs(dataDir: string): PersistedTabs | null {
       };
     }
 
+    // v2：Split Tree。这里只做形状兜底，引用校验 / 去重 / 折叠交给 split-model.normalizeLayout。
+    let layout: PersistedLayout | null = null;
+    const rawLayout = raw.layout as Partial<PersistedLayout> | null | undefined;
+    if (rawLayout && rawLayout.version === LAYOUT_SCHEMA_VERSION && isRecord(rawLayout.root)) {
+      layout = {
+        version: LAYOUT_SCHEMA_VERSION,
+        root: rawLayout.root as PersistedLayoutNode,
+        focusedPaneId: typeof rawLayout.focusedPaneId === "string" ? rawLayout.focusedPaneId : "",
+      };
+    }
+
     return {
-      version: VERSION,
+      version: Number.isInteger(raw.version) ? Number(raw.version) : VERSION,
       activeIndex: Number.isInteger(raw.activeIndex) ? Number(raw.activeIndex) : 0,
       tabs,
       ...(split && split.groups.length > 1 ? { split } : {}),
+      ...(layout ? { layout } : {}),
     };
   } catch {
     return null;
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export function saveTabs(dataDir: string, state: PersistedTabs): void {
   const file = tabsFile(dataDir);
   const temp = `${file}.tmp`;
   try {
-    writeFileSync(temp, `${JSON.stringify({ ...state, version: VERSION }, null, 2)}\n`, "utf8");
+    const version = Number.isInteger(state.version) ? state.version : VERSION;
+    writeFileSync(temp, `${JSON.stringify({ ...state, version }, null, 2)}\n`, "utf8");
     renameSync(temp, file);
   } catch {
     // 保存失败不该影响使用（下次启动就是旧的页签列表）

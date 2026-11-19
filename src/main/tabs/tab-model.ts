@@ -6,8 +6,9 @@
  * 不重复实现 tab-persistence.ts：读写文件仍走那边，这里只做「内存态 ↔ 持久化态」的映射。
  */
 
-import type { PersistedTabs } from "./tab-persistence.ts";
+import type { PersistedSplit, PersistedTabs } from "./tab-persistence.ts";
 import type { SplitLayout } from "../../shared/split.ts";
+import { LAYOUT_SCHEMA_VERSION, toPersistedTree, type LayoutNode } from "../../shared/split-model.ts";
 
 export interface OrderedTab {
   pinned: boolean;
@@ -74,6 +75,9 @@ export interface TabStateForSave {
   groups: PersistableGroup[];
   focused: number;
   layout: SplitLayout;
+  /** v2：Split Tree；不传则仍然输出 v1 平面结构（旧调用方 / 测试兼容） */
+  tree?: LayoutNode | null;
+  focusedPaneId?: string | null;
 }
 
 /**
@@ -82,21 +86,31 @@ export interface TabStateForSave {
  */
 export function toPersistedTabs(state: TabStateForSave): PersistedTabs {
   const indexOf = (id: string): number => state.tabs.findIndex((tab) => tab.id === id);
+  const legacy: PersistedSplit = {
+    groups: state.groups.map((group) =>
+      group.tabIds.map(indexOf).filter((index) => index >= 0),
+    ),
+    active: state.groups.map((group) => {
+      if (!group.activeId) return null;
+      const index = indexOf(group.activeId);
+      return index >= 0 ? index : null;
+    }),
+    focused: state.focused,
+    layout: state.layout,
+  };
+  const activeIndex = Math.max(state.tabs.findIndex((tab) => tab.id === state.activeId), 0);
+  const tabs = state.tabs.map((tab) => ({ path: tab.path, title: tab.title, pinned: tab.pinned }));
+  // 没有树时保持 v1 原样（老调用 / 回归用）；有树时写 v2，并保留 split 作为降级镜像。
+  if (!state.tree) return { version: 1, activeIndex, tabs, split: legacy };
   return {
-    version: 1,
-    activeIndex: Math.max(state.tabs.findIndex((tab) => tab.id === state.activeId), 0),
-    tabs: state.tabs.map((tab) => ({ path: tab.path, title: tab.title, pinned: tab.pinned })),
-    split: {
-      groups: state.groups.map((group) =>
-        group.tabIds.map(indexOf).filter((index) => index >= 0),
-      ),
-      active: state.groups.map((group) => {
-        if (!group.activeId) return null;
-        const index = indexOf(group.activeId);
-        return index >= 0 ? index : null;
-      }),
-      focused: state.focused,
-      layout: state.layout,
+    version: LAYOUT_SCHEMA_VERSION,
+    activeIndex,
+    tabs,
+    split: legacy,
+    layout: {
+      version: LAYOUT_SCHEMA_VERSION,
+      root: toPersistedTree(state.tree, indexOf),
+      focusedPaneId: state.focusedPaneId ?? "",
     },
   };
 }
