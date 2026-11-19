@@ -121,6 +121,8 @@ export class DraftWorkspace {
   private lastResult: DraftSendResult | null = null;
   private appliedWidth = -1;
   private disposed = false;
+  /** 只读探针节流时间戳：Agent 开始/结束运行时靠状态轮询带它刷新按钮模式 */
+  private lastProbeAt = 0;
 
   constructor(options: DraftWorkspaceOptions) {
     this.options = options;
@@ -140,6 +142,8 @@ export class DraftWorkspace {
     this.lastResult = null;
     this.options.onDebug?.("[draft] 独立输入工作区已展开");
     this.emit();
+    // 打开时立刻读一次：面板刚展开时按钮文案不能停留在上一次的 send/steer 结论
+    void this.probeActive();
   }
 
   /** 收起不丢草稿：草稿一直存在内存 + drafts.json 里 */
@@ -419,12 +423,18 @@ export class DraftWorkspace {
     const titleChanged = (ctx?.title ?? "") !== (this.activeContext?.title ?? "");
     // 存副本：provider 返回的对象可能被就地修改，不能让 activeContext 跟着变
     this.activeContext = ctx ? { ...ctx } : null;
-    if (!changed && !titleChanged) return;
-    this.contextSignature = signature;
+    // Agent 开始 / 结束运行时，pi-web 会把 send 按钮整组换成 steer / followUp，
+    // 但 tabId / sessionKey / title 都不变，也不会触发 dom-ready。
+    // TabManager.notify()（状态轮询 700ms）每次都会调到这里，按节流重跑只读探针，
+    // 主按钮文案才能跟着 pi-web 状态切换，而不是一直停在「发送到对话」。
     if (changed) {
       this.lastResult = null;
       void this.probeActive();
+    } else if (this.panelOpen && Date.now() - this.lastProbeAt >= 900) {
+      void this.probeActive();
     }
+    if (!changed && !titleChanged) return;
+    this.contextSignature = signature;
     this.emit();
   }
 
@@ -507,15 +517,26 @@ export class DraftWorkspace {
     if (!ctx || !this.options.enabled || this.disposed) return;
     const wc = this.options.tabs.contents(ctx.tabId);
     if (!wc || wc.isDestroyed()) return;
+    this.lastProbeAt = Date.now();
     try {
       const raw = await wc.executeJavaScript(COMPOSER_PROBE_SCRIPT, true);
       const payload = parseJson<ComposerProbeResult>(raw);
       if (!payload) return;
-      this.typography = payload.typography ?? null;
-      this.modes = { ...EMPTY_MODES, ...(payload.modes ?? {}) };
-      // 探针一更新 modes，主按钮文案就通过 emit() 自动跟着切，无需用户操作
-      this.setCompat(evaluateComposer(payload, { enabled: this.options.enabled }));
-      this.emit();
+      const nextTypography = payload.typography ?? null;
+      const nextModes: DraftModes = { ...EMPTY_MODES, ...(payload.modes ?? {}) };
+      const verdict = evaluateComposer(payload, { enabled: this.options.enabled });
+      // 状态轮询（700ms）会反复重跑探针，绝大多数结果和上次完全一样。
+      // snapshot() 含整篇草稿文本与附件，无条件 emit() 会把 84KB+ 的全量快照
+      // 每 ~1s 广播到所有窗口，渲染层还会反复重建附件 chip / 覆盖编辑器内容。
+      // 只有结论真的变了才广播（setCompat 内部仅在 verdict 变化时 emit 一次）。
+      const typographyChanged = JSON.stringify(nextTypography) !== JSON.stringify(this.typography);
+      const modesChanged = JSON.stringify(nextModes) !== JSON.stringify(this.modes);
+      const compatChanged =
+        verdict.level !== this.compat.level || verdict.reason !== this.compat.reason;
+      this.typography = nextTypography;
+      this.modes = nextModes;
+      if (compatChanged) this.setCompat(verdict);
+      else if (typographyChanged || modesChanged) this.emit();
     } catch (error) {
       this.setCompat({
         level: "disabled",

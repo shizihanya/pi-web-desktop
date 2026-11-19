@@ -51,7 +51,7 @@
 | Windows 通知增强 | `ServiceWorkerRegistration.prototype.showNotification`、`window.Notification`、`document.hasFocus`、`__piDesktopWindowFocused` | `src/main/tabs/notification-patch.ts`、`tab-manager.ts` `syncWindowFocus()` | Web API / DOM | `.next/static/chunks/app/page-*.js` 中 `showNotification` | **高** | 任务完成不出 toast / 失焦误判 | 注入失败记诊断；上游改实现时优先降级，保留原生 |
 | 登录态 | `partition:"persist:piweb"` + Cookie / Basic Auth；接口请求在**页面 realm** 内发起 | `tab-manager.ts`、`tab-status.ts` | Web API | 上游 `/login` + `PI_WEB_PASSWORD` | 中 | 状态接口 401 | 换一个有效页面作为状态源；主进程不保存密码 |
 | 服务更新 | `npm view` / `npm install -g @agegr/pi-web@x.y.z` / `pi-web version` | `src/main/server/pi-web-update.ts`、`settings-service.ts`、`runtime-update.ts` | CLI | 全局 npm 包 | **高** | 影响终端里的 pi-web、可能半更新 | 见 §6（审查 + 失败时恢复旧版本并验证，未引入多版本 Runtime） |
-| **独立输入工作区（Plan 01 / 01.1）** | `.chat-input-shell textarea.chat-input-textarea`（主输入框，side chat 无此包裹）、提交按钮多语言标签 `chat.send`（发送/傳送/Send）、`chat.steer`（引导/引導/Steer）、`chat.followUp`（后续消息/後續訊息/Follow-up）、`button[title=chat.attachFiles]`（附加文件）、原生 `onPaste` 从 `clipboardData.items` 取 `image/*`、textarea 的 computed `font-family/font-size/line-height/color`、`fieldset.chat-input-shell[disabled\|aria-busy]`、`?session=` / `?cwd=`、`localStorage["pi-enter-send-mode"]`（仅诊断） | `src/main/tabs/composer-bridge.ts`（只读探针 / 入口 / 复用原生发送）、`draft-model.ts`、`draft-workspace.ts`、`src/renderer/tabbar/draft-panel.ts` | DOM / Web API | `.next/static/chunks/app/page-*.js`（`className:"chat-input-textarea"`、`chat.send`、`chat-input-shell`、`pi-enter-send-mode`） | **高** | 禁止错误发送（面板 `disabled`），但**原生输入框始终可用**；绝不自行调用 `/api/agent/*` | 探针不通过 / 作用域不明 / 注入失败 → `disabled` 且禁止发送；发送脚本二次复核会话与发送按钮；`check:composer-bridge` 锁语法与安全契约 |
+| **独立输入工作区（Plan 01 / 01.1）** | `.chat-input-shell textarea.chat-input-textarea`（主输入框，side chat 无此包裹）、提交按钮多语言标签 `chat.send`（发送/傳送/Send）、`chat.steer`（引导/引導/Steer）、`chat.followUp`（后续消息/後續訊息/Follow-up）、`button[title=chat.attachFiles]`（附加文件）、原生 `onPaste` 从 `clipboardData.items` 取 `image/*`、textarea 的 computed `font-family/font-size/line-height/color`、`fieldset.chat-input-shell[disabled\|aria-busy]`（**仅斜杠命令执行时短暂锁住，不作为发送拒绝条件**）、`?session=` / `?cwd=`、`localStorage["pi-enter-send-mode"]`（仅诊断） | `src/main/tabs/composer-bridge.ts`（只读探针 / 复用原生发送，不再注入可见入口）、`draft-model.ts`、`draft-workspace.ts`、`src/renderer/tabbar/draft-panel.ts` | DOM / Web API | `.next/static/chunks/app/page-*.js`（`className:"chat-input-textarea"`、`chat.send`、`chat-input-shell`、`pi-enter-send-mode`） | **高** | 禁止错误发送（面板 `disabled`），但**原生输入框始终可用**；绝不自行调用 `/api/agent/*` | 探针不通过 / 作用域不明 / 注入失败 → `disabled` 且禁止发送；发送脚本二次复核会话、按**模式**判断对应原生按钮可用性；`check:composer-bridge` 锁语法与安全契约、`check:composer-send` 用 DOM 桩真跑发送脚本 |
 
 > 刻意**不依赖**：`pi-web:unread-session-ids`（跨页签共享的全局未读集合，会让所有页签一起亮）、
 > `.next` 内部 chunk 文件名 / 内容、pi-web 源码文件、任何本地 `@agegr/pi-web` 依赖或补丁包。
@@ -100,7 +100,7 @@ PI_WEB_DESKTOP_DISABLE_DRAFT_WORKSPACE       # 独立输入工作区（关闭后
 每次 `npm i -g @agegr/pi-web@latest`（或设置页「检查更新」）之后，按顺序执行：
 
 ```powershell
-npm run check:all      # check（typecheck + 16 项静态/纯逻辑回归）+ smoke（真起一个临时 pi-web 服务）
+npm run check:all      # check（typecheck + 17 项静态/纯逻辑回归）+ smoke（真起一个临时 pi-web 服务）
 npm run app            # 再按下面 8 条人工过一遍
 ```
 
@@ -109,7 +109,7 @@ npm run app            # 再按下面 8 条人工过一遍
 | 1 | 页面正常加载 | 主窗口出现 pi-web，无白屏 / 无 splash 报错 | 看 `server.log`；`check:contracts` 结果 |
 | 2 | 会话正常打开 | 侧栏点一个会话，URL 出现 `?session=`；重启应用后恢复 | `smoke` 的 `/?session=` 断言 |
 | 3 | 消息正常发送 | 发一条消息并收到回答 | 与桌面增强无关；若失效先怀疑上游本身 |
-| 4 | 独立输入工作区 / 原生输入框 | 面板能展开、字体与原生一致、可拖宽度、草稿按页签 + 会话隔离、图片可点开预览；提交模式**全自动**（单个主按钮随 pi-web 状态切文案，无下拉），「在原生输入框中继续」收进编辑器右键菜单；发送复用原生输入框与提交按钮；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 看 `sendPreflight` / `noInjectedEntry` / `fontMatch` / `resized` / `singleSubmit` / `autoModeIdle` / `imgVisible` / `successHintAutoHide`。另验「增强关闭时 pi-web 原生输入框仍能正常收发消息」 | 若 `[compat] composer` 为 `disabled`，增强会禁止发送并显示原因，但原生输入框必须照常可用；若上游改了提交按钮标签，`check:contracts` 的 composer 只读扫描会先报出来 |
+| 4 | 独立输入工作区 / 原生输入框 | 面板能展开、字体与原生一致、可拖宽度、草稿按页签 + 会话隔离、图片可点开预览；提交模式**全自动**（单个主按钮随 pi-web 状态切文案，无下拉），「在原生输入框中继续」收进编辑器右键菜单；发送复用原生输入框与提交按钮；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 看 `sendPreflight` / `noInjectedEntry` / `fontMatch` / `resized` / `singleSubmit` / `autoModeIdle` / `imgVisible` / `successHintAutoHide` / `[selftest-draft-stream]` 的 `send` / `steer` / `followUp` / `imageOnly` / `lockedByMode`。另验「增强关闭时 pi-web 原生输入框仍能正常收发消息」 | 若 `[compat] composer` 为 `disabled`，增强会禁止发送并显示原因，但原生输入框必须照常可用；若上游改了提交按钮标签，`check:contracts` 的 composer 只读扫描会先报出来 |
 | 5 | Agent 状态正常显示 | 后台页签跑任务 → 转圈；回答完毕 → 蓝点；等确认 → 橙点；切到该页签后提示消失。`PI_WEB_DESKTOP_DEBUG_STATUS=1` 看 `[status]` 日志，session 应与该页签 URL 一致 | `statusProbeCompatible` 降级 → 检查 `/api/agent/running` 返回结构与侧栏选择器 |
 | 6 | 主题正常同步 | 切 `mist` / `pine` / `sand` 等不同主题，页签栏与窗口控件 ≤1s 跟随；冷启动不闪浅色 | `themeProbeCompatible` 降级 → 检查 CSS 变量名 |
 | 7 | 通知正常工作 | 任务完成时把窗口失焦，仍弹 Windows toast 且标题带页签名；`PI_WEB_DESKTOP_DEBUG_NOTIFY=1` 看注入日志 | `notificationCompatible` 降级 → 检查上游是否还在用 `showNotification` |
@@ -249,7 +249,7 @@ npm run app            # 再按下面 8 条人工过一遍
   `draft-persistence.ts`（`drafts.json`）、`draft-workspace.ts`（编排）、
   `composer-bridge.ts`（注入脚本）、`src/renderer/tabbar/draft-panel.ts`（面板 UI）；
   `tab-manager.ts` 只加 `reservedRightWidth` 与三个回调，不重构 Composer / TabManager。
-  回归：`check:draft-model` / `check:composer-bridge` / `check:draft-workspace` +
+  回归：`check:draft-model` / `check:composer-bridge` / `check:composer-send` / `check:draft-workspace` +
   真实 Electron GUI 自测（`PI_WEB_DESKTOP_SELFTEST_DRAFT=1`）。
 - **第六阶段 崩溃恢复（已做）**：`tab-lifecycle.ts` 明确五种状态；`render-process-gone`
   只标记 Crashed、保留页签与 `tab.path` 会话 URL、停止该页签的状态请求源，
@@ -267,7 +267,7 @@ npm run app            # 再按下面 8 条人工过一遍
   给出可执行的手动命令。「更新成功但启动失败」这条也走同一回滚路径。
   registry 不可用 / 多实例占用 / 端口被占仍由原有分支处理；更新中断（进程被杀）时
   服务已停，下次启动由健康监护自愈，但全局包可能半更新 —— 仍属已知风险，不做自动修复。
-- **第八阶段 自动化回归（已做）**：`npm run check` 现包含 typecheck + 16 项回归（见 §7，Plan 01 新增 3 项），页签创建/关闭/
+- **第八阶段 自动化回归（已做）**：`npm run check` 现包含 typecheck + 17 项回归（见 §7，Plan 01 新增 4 项），页签创建/关闭/
   固定/移动/恢复、状态、兼容性、生命周期、Runtime 回滚决策都有不依赖 GUI 的断言。
   GUI 人工清单仍在 `docs/TESTING.md`。
 - **分屏已知限制（按计划不改算法）**：`src/shared/split.ts` 保持原样。窗口内容区小于
@@ -280,13 +280,13 @@ npm run app            # 再按下面 8 条人工过一遍
 
 | 命令 | 作用 | 需要 GUI / 联网 |
 | --- | --- | --- |
-| `npm run check` | typecheck + 16 项静态/纯逻辑回归（契约、主题、状态、分屏、页签、生命周期、Runtime、草稿、Composer 桥接、工作区编排） | 否 / 否 |
+| `npm run check` | typecheck + 17 项静态/纯逻辑回归（契约、主题、状态、分屏、页签、生命周期、Runtime、草稿、Composer 桥接、发送脚本行为、工作区编排） | 否 / 否 |
 | `npm run check:all` | `check` + `smoke`（真起临时 pi-web 服务） | 否 / 否（需本机装了 pi-web） |
 | `npm run check:contracts` | 内部依赖漂移 + 上游 `.next` 只读契约扫描 + 零侵入硬约束 | 否 / 否 |
 | `check:status` / `check:status-model` / `check:status-manager` | 注入脚本 / 状态计算 / 编排 | 否 / 否 |
 | `check:theme` / `check:theme-manager` / `check:notification` / `check:notification-bridge` | 脚本 + 管理器 | 否 / 否 |
 | `check:compat` / `check:split` / `check:lifecycle` / `check:tab-model` / `check:runtime-update` | 兼容性 / 分屏 / 生命周期 / 页签 / Runtime 回滚 | 否 / 否 |
-| `check:draft-model` / `check:composer-bridge` / `check:draft-workspace` | 草稿隔离 / 注入脚本安全契约 / 工作区编排（成功清空、失败保留、连点去重、不兼容禁止发送） | 否 / 否 |
+| `check:draft-model` / `check:composer-bridge` / `check:composer-send` / `check:draft-workspace` | 草稿隔离 / 注入脚本安全契约 / **发送脚本真跑**（空闲 send、运行中 steer/followUp、纯文字、纯图片、失败保留、连点去重、fieldset 不一刀切）/ 工作区编排（成功清空、失败保留、连点去重、不兼容禁止发送） | 否 / 否 |
 | `PI_WEB_DESKTOP_SELFTEST_DRAFT=1 npm run app` | 真实 Electron GUI 自测（打开关闭、长文本、页签隔离、视图 bounds、重启恢复、原生 Composer 探针；不发真实消息） | 是 / 视服务而定 |
 | `PI_WEB_DESKTOP_DEBUG_COMPAT=1 npm run app` | 在 `server.log` 打印全部兼容性结论 | 是 / 视服务而定 |
 | `docs/TESTING.md` | 人工自测清单（页签 / 分屏 / 托盘 / 通知 / 主题 / 崩溃 / 异常路径） | 是 / 视服务而定 |

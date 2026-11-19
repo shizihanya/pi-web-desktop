@@ -43,6 +43,9 @@ compiles("steer 模式发送脚本语法正确", buildComposerSendScript({ ...pa
 compiles("followUp 模式 + 图片发送脚本语法正确", buildComposerSendScript({
   ...payload, mode: "followUp", images: [{ data: "AAAA", mimeType: "image/png", name: "a.png" }],
 }));
+compiles("纯图片（空文本）发送脚本语法正确", buildComposerSendScript({
+  ...payload, text: "", images: [{ data: "AAAA", mimeType: "image/png", name: "a.png" }],
+}));
 
 /* ---------------- 只读探针 ---------------- */
 const probeNeeds = [
@@ -93,7 +96,10 @@ const sendNeeds = [
   "ClipboardEvent('paste'",
   "new DataTransfer()",
   "window.__piDesktopDraftSending",
-  "value.indexOf(P.text) === -1",
+  "function finish(result)",
+  "function buttonUsable(b)",
+  "function attachmentCount()",
+  "value.indexOf(baselineText) === -1",
   "草稿未清空",
 ];
 for (const needle of sendNeeds) {
@@ -105,12 +111,39 @@ check("发送脚本不发送键盘模拟（避免 streaming 时误触 steer）",
 check("发送脚本不依赖旧的 #file-panel / 展开按钮", !/file-panel|file-panel-expand-button/.test(src));
 
 /* ---------------- bug 回归：空输入时发送按钮本来就是 disabled ---------------- */
-const writeAt = src.indexOf("setter.call(ta, finalText)");
-const disabledAt = src.indexOf("button.disabled");
+const sendScript = buildComposerSendScript(payload);
+const writeAt = sendScript.indexOf("setter.call(ta, finalText)");
+const buttonCheckAt = sendScript.indexOf("if (!buttonUsable(button))");
 check(
-  "先写入文本让 React 启用按钮，再检查 disabled（pi-web 空输入时按钮必然置灰）",
-  writeAt > 0 && disabledAt > writeAt,
-  `writeAt=${writeAt} disabledAt=${disabledAt}`,
+  "先写入文本让 React 启用按钮，再判断该模式按钮是否可用",
+  writeAt > 0 && buttonCheckAt > writeAt,
+  `writeAt=${writeAt} buttonCheckAt=${buttonCheckAt}`,
+);
+check(
+  "不再用 fieldset.disabled / aria-busy 一刀切拒绝所有模式",
+  !sendScript.includes("var fieldset = ta.closest('fieldset')") &&
+    !sendScript.includes("pi-web 输入框当前不可用"),
+);
+check(
+  "按模式判断按钮可用性，并给出对应模式的失败原因",
+  sendScript.includes("function buttonUsable(b)") &&
+    sendScript.includes("if (!buttonUsable(button))") &&
+    sendScript.includes("找不到可用的原生' + label"),
+);
+check(
+  "纯文字 / 文字+图片 / 纯图片都允许，只有两者皆空才拒绝",
+  sendScript.includes("var hasText") && sendScript.includes("if (!hasText && !hasImages)"),
+);
+check(
+  "成功判定同时看文本清空与附件消失（纯图片 P.text 为空也不会超时误报）",
+  sendScript.includes("baselineText") && sendScript.includes("imagesGone") &&
+    !sendScript.includes("value.indexOf(P.text)"),
+);
+check(
+  "重复发送闸门在任何 setTimeout 之前置位，所有出口统一 finish 释放",
+  sendScript.indexOf("window.__piDesktopDraftSending = true") < sendScript.indexOf("window.setTimeout(function ()") &&
+    sendScript.includes("function finish(result)") &&
+    (sendScript.match(/finish\(fail\(/g) ?? []).length >= 7,
 );
 check(
   "提交按钮标签覆盖多语言：发送 / 引导 / 后续消息",

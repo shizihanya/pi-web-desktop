@@ -103,6 +103,8 @@
       </header>
       <div class="draft-compat" id="draft-compat" hidden></div>
       <div class="draft-attachments" id="draft-attachments" hidden></div>
+      <!-- 图片只存内存、不写 drafts.json：有附件时明确告知重启会丢失，避免用户误以为已保存 -->
+      <div class="draft-image-note" id="draft-image-note" hidden>图片仅保留在本次运行期间，重启应用后需重新附加</div>
       <textarea
         id="draft-editor"
         class="draft-editor"

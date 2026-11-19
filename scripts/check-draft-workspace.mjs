@@ -203,9 +203,12 @@ try {
 
   a.sendResult = { ok: false, reason: "未能确认消息已送达，草稿未清空" };
   ws.setText("发送失败要保留的内容");
+  ws.addImages([{ data: "HHHH", mimeType: "image/png", name: "fail.png" }]);
   const failedSend = await ws.send();
   check("发送失败返回 !ok", !failedSend.ok);
-  check("发送失败时保留草稿", ws.snapshot().text === "发送失败要保留的内容");
+  check("发送失败时保留草稿文本", ws.snapshot().text === "发送失败要保留的内容");
+  check("发送失败时保留图片附件", ws.snapshot().attachments.length === 1);
+  for (const attachment of ws.snapshot().attachments) ws.removeImage(attachment.id);
   a.sendResult = { ok: true, reason: "ok" };
 
   /* ---------------- 连续快速点击不重复提交 ---------------- */
@@ -337,10 +340,46 @@ try {
   a.emit("did-finish-load");
   await tick();
   check("自动模式：steer 不可用时回落到 followUp", ws.snapshot().mode === "followUp");
+  await ws.send();
+  check("followUp 自动模式下发送脚本用的就是 followUp（文案与实际模式一致）", a.calls[a.calls.length - 1].includes('"mode":"followUp"'));
   a.probe = GOOD_PROBE;
   a.emit("did-finish-load");
   await tick();
   check("自动模式：Agent 跑完自动回到 send", ws.snapshot().mode === "send");
+
+  /* ---------------- Agent 开始/结束：状态轮询带动只读探针刷新按钮文案 ---------------- */
+  // 实证：pi-web 在 Agent 运行中把 send 按钮整组换成 steer/followUp，
+  // 但不会触发 dom-ready，tabId/sessionKey/title 也不变。
+  // TabManager.notify()（状态轮询 700ms）→ refreshContext() 必须按节流重跑探针。
+  const beforeSteer = snapshots.length;
+  a.probe = { ...GOOD_PROBE, sendButton: false, modes: { send: false, steer: true, followUp: true, attach: true } };
+  await new Promise((r) => setTimeout(r, 950)); // 越过 900ms 节流
+  ws.refreshContext();
+  await tick(6);
+  check("Agent 开始运行（signature 不变）后按钮文案自动切到 steer", ws.snapshot().mode === "steer");
+  check("模式真变化时确实广播了新快照（渲染层才会换文案）", snapshots.length > beforeSteer);
+  a.probe = GOOD_PROBE;
+  await new Promise((r) => setTimeout(r, 950));
+  ws.refreshContext();
+  await tick(6);
+  check("Agent 结束后按钮文案自动回到 send", ws.snapshot().mode === "send");
+
+  /* ---------------- 性能回归：结果不变时不重复广播全量快照 ---------------- */
+  // snapshot 含整篇草稿文本 + 附件，状态轮询每 700ms 一次；
+  // 若探针每次都 emit，100KB 长草稿会被序列化 + IPC 广播到所有窗口并让渲染层反复重建 DOM。
+  ws.setText("长文本性能回归 ".repeat(10_000));
+  const beforeIdle = snapshots.length;
+  const snapshotBytes = JSON.stringify(ws.snapshot()).length;
+  for (let i = 0; i < 3; i += 1) {
+    await new Promise((r) => setTimeout(r, 950));
+    ws.refreshContext();
+    await tick(6);
+  }
+  check(
+    "探针结果不变时 3 轮状态轮询零额外全量快照广播",
+    snapshots.length === beforeIdle,
+    `before=${beforeIdle} after=${snapshots.length} 单次快照≈${snapshotBytes}B`,
+  );
 
   ws.setText("带图片的草稿");
   ws.addImages([{ data: "AAAA", mimeType: "image/png", name: "a.png" }]);
@@ -354,6 +393,35 @@ try {
   check("非图片附件被拒绝", ws.snapshot().attachments.length === 1);
   ws.removeImage(ws.snapshot().attachments[0].id);
   check("可移除单张图片", ws.snapshot().attachments.length === 0 && ws.getImage("nope") === null);
+
+  /* ---------------- 纯图片 / 文字+图片 / 失败保留附件 ---------------- */
+  a.sendResult = { ok: true, reason: "ok" };
+  ws.setText(""); // 纯图片：草稿文本为空，只有附件
+  ws.addImages([{ data: "EEEE", mimeType: "image/png", name: "only.png" }]);
+  check("纯图片草稿 canSend 为 true", ws.snapshot().canSend && ws.snapshot().text === "" && ws.snapshot().attachments.length === 1);
+  const imageOnly = await ws.send();
+  check("纯图片允许发送", imageOnly.ok, JSON.stringify(imageOnly));
+  const imageOnlyCall = a.calls[a.calls.length - 1];
+  check("纯图片发送脚本带图片数据且 text 为空", imageOnlyCall.includes('"text":""') && imageOnlyCall.includes("EEEE"));
+  check("纯图片发送成功后清空附件", ws.snapshot().attachments.length === 0);
+
+  ws.setText("文字 + 图片");
+  ws.addImages([{ data: "FFFF", mimeType: "image/png", name: "mix.png" }]);
+  const mixed = await ws.send();
+  check("文字 + 图片允许发送", mixed.ok, JSON.stringify(mixed));
+
+  a.sendResult = { ok: false, reason: "未能确认消息已送达" };
+  ws.setText("失败要保留");
+  ws.addImages([{ data: "GGGG", mimeType: "image/png", name: "keep.png" }]);
+  const kept = await ws.send();
+  check(
+    "发送失败同时保留草稿文本和图片附件",
+    !kept.ok && ws.snapshot().text === "失败要保留" && ws.snapshot().attachments.length === 1,
+    JSON.stringify(kept),
+  );
+  a.sendResult = { ok: true, reason: "ok" };
+  ws.setText("");
+  for (const attachment of ws.snapshot().attachments) ws.removeImage(attachment.id);
 
   ws.attach(a);
   const domReadyListeners = a.listeners.get("dom-ready").length;

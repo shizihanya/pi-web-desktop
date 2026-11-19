@@ -714,6 +714,15 @@ body {
   border-bottom: 1px solid var(--border, #d0d7de);
   background: var(--bg, #fff);
 }
+.draft-image-note {
+  flex: 0 0 auto;
+  padding: 3px 10px 5px;
+  border-bottom: 1px solid var(--border, #d0d7de);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-muted, var(--text, #6e7781));
+  background: var(--bg, #fff);
+}
 .draft-attachment {
   display: inline-flex;
   align-items: center;

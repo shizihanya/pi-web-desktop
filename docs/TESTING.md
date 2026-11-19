@@ -64,7 +64,7 @@
 | 41 | 应用退出（托盘 → 退出并停止服务）后重启 | `drafts.json` 里草稿仍在，重启后按「路径 + 会话」恢复到对应页签 |
 | 42 | 展开面板，对比面板字体与 pi-web 原生输入框 | 字体 / 字号 / 行高 / 颜色一致（探针直接读原生 computed style）；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 日志里 `fontMatch=true` |
 | 43 | 拖动面板左边缘分隔条 | 宽度在 280–720px（且不超过窗口 60%）之间变化，pi-web 视图同步收窄；`resized=920x860@x0` 表示拖到 520px 后视图宽度 1440-520；重启后宽度保持 |
-| 44 | 面板里粘贴 / 拖入图片，或点底部「附加文件」图标 | 图标 / 尺寸 / 配色与 pi-web 原生一致（无边框 SVG）；出现附件条目、可逐张 × 移除；发送时通过原生 `onPaste` 进入附件，不写进 `drafts.json` |
+| 44 | 面板里粘贴 / 拖入图片，或点底部「附加文件」图标 | 图标 / 尺寸 / 配色与 pi-web 原生一致（无边框 SVG）；出现附件条目、可逐张 × 移除；发送时通过原生 `onPaste` 进入附件，不写进 `drafts.json`；有附件时显示「图片仅保留在本次运行期间，重启应用后需重新附加」提示 |
 | 45 | **点击附件 chip** | 在**右侧面板内**打开图片预览（只盖编辑区、不压暗左侧对话），图片按面板尺寸 contain 居中、带标题和 ×，点空白 / × / `Esc` 关闭；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 日志里 `imgVisible=true` |
 | 46 | 看底部提交区 | **只有一个** `发送到对话` 主按钮，没有 `▾` 下拉、没有模式按钮排、没有第二个「原生输入框」按钮（`singleSubmit=true`） |
 | 47 | 让 Agent 跑起来，再看主按钮 | 文案**自动**变成 `发送引导`（steer 不可用时 `排队后续消息`），跑完自动变回 `发送到对话`；无需任何手动选择，点的仍是 pi-web 自己的按钮。回归见 `check:draft-workspace` 的自动模式断言 |
@@ -72,6 +72,10 @@
 | 49 | 触发一次成功操作（如 48），等 4 秒 | 底部 `✓ …` 提示**自动消失**；失败原因保留；重新输入即清除（`successHintAutoHide=true`） |
 | 50 | 看 pi-web 发送按钮左边 | **不应有** `⤢` 小按钮：页面 realm 零可见注入，唯一入口是页签栏 `⌗`；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 日志里 `noInjectedEntry=true` |
 | 51 | 原生输入框为空时点「发送到对话」 | **不应**再报「找不到可用的原生发送按钮」：先写文本让 React 启用按钮再点；日志 `sendPreflight=true (disabled true→false)` |
+| 52 | 只贴一张图片、文字留空后发送 | **纯图片可发送**（不报「草稿为空」，也不超时误报失败）；文字+图片、纯文字同样可发；只有文字和图片都空才拒绝。回归见 `check:composer-send` / `check:draft-workspace` |
+| 53 | Agent 运行中发送（steer / followUp） | 脚本按当前模式点 pi-web 自己的「引导」/「后续消息」按钮，不因 `fieldset.disabled` 被提前拒掉；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 日志里 `send=true steer=true followUp=true imageOnly=true lockedByMode=true` |
+| 54 | 快速连续两次触发发送脚本 | 页面 realm 的 `__piDesktopDraftSending` 闸门在 `setTimeout` **之前**置位、所有出口统一释放，第二次立即被忽略；`check:composer-send` 覆盖 |
+| 55 | 发送失败后检查图片附件 | 草稿文本**和图片附件都保留**，不会被清空 |
 
 ## 异常路径清单
 
@@ -144,6 +148,7 @@ $env:PI_WEB_DESKTOP_NATIVE_TITLEBAR = "1"      # 退回系统原生标题栏（�
 先跑 `npm run check:all`（不启动 GUI 的静态/纯逻辑回归 + 契约冒烟），
 再按 [上游兼容性清单](development/pi-web-compatibility.md) 的人工回归清单过一遍；
 独立输入工作区依赖的 Composer 选择器由 `check:contracts` / `check:composer-bridge` 只读守着，
+发送脚本的实际行为由 `check:composer-send` 在 DOM 桩里真跑回归，
 契约破坏时增强会降级为 `disabled` 并禁止发送，但 pi-web 原生输入框照常可用。
 重点：4 个页签同时打开时 `/api/agent/running` 每轮只应有 **1 个**请求；
 关掉作为状态源的页签后状态提示仍能更新；服务重启后状态能重新初始化；

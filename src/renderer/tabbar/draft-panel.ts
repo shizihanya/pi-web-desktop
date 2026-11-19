@@ -23,6 +23,7 @@ const countLabel = document.getElementById("draft-count") as HTMLSpanElement;
 const compatBox = document.getElementById("draft-compat") as HTMLDivElement;
 const resultBox = document.getElementById("draft-result") as HTMLDivElement;
 const attachmentsBox = document.getElementById("draft-attachments") as HTMLDivElement;
+const imageNote = document.getElementById("draft-image-note") as HTMLDivElement;
 const attachButton = document.getElementById("draft-attach") as HTMLButtonElement;
 const fileInput = document.getElementById("draft-file") as HTMLInputElement;
 const lightbox = document.getElementById("draft-lightbox") as HTMLDivElement;
@@ -120,6 +121,7 @@ function render(snapshot: DraftSnapshot): void {
   attachButton.classList.toggle("has-images", snapshot.attachments.length > 0);
   attachmentsBox.replaceChildren();
   attachmentsBox.hidden = snapshot.attachments.length === 0;
+  imageNote.hidden = snapshot.attachments.length === 0;
   for (const attachment of snapshot.attachments) {
     const chip = document.createElement("div");
     chip.className = "draft-attachment";

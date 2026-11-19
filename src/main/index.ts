@@ -15,7 +15,11 @@ import { SettingsService } from "./settings-service";
 import { openSettingsWindow } from "./settings-window";
 import { TabManager } from "./tabs/tab-manager";
 import { DraftWorkspace, type DraftContents } from "./tabs/draft-workspace";
-import { COMPOSER_DIAGNOSE_SCRIPT, COMPOSER_PROBE_SCRIPT } from "./tabs/composer-bridge";
+import {
+  COMPOSER_DIAGNOSE_SCRIPT,
+  COMPOSER_PROBE_SCRIPT,
+  buildComposerSendScript,
+} from "./tabs/composer-bridge";
 import { loadTheme } from "./tabs/theme-persistence";
 import { AppTray } from "./tray";
 import { removeAutoShortcuts, watchAutoShortcuts } from "./start-menu";
@@ -727,6 +731,9 @@ function runDraftSelftest(): void {
       return;
     }
     const results: string[] = [];
+    // 64x64 纯色 PNG：图片附件 / 纯图片发送验证共用
+    const tinyPng =
+      "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAADZSURBVHhe7dBBDcQAEMPAA1b+KI5LS2AIROtI/vgX//7P816mAJKXKIDkJQogeYkCSF6iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkpcogOQlCiB5iQJIXqIAkpc4HuB5P+5DwPD5sak1AAAAAElFTkSuQmCC";
     const firstId = mgr.snapshot().activeId;
     results.push(`firstTab=${firstId ? "yes" : "no"}`);
 
@@ -935,8 +942,7 @@ function runDraftSelftest(): void {
       ui.push(`hiddenNativeEntry=${structure.hasContext && structure.contextHidden}`);
 
       // 64x64 纯色 PNG：验证附件能取回数据、点开后图片确实有可见尺寸
-      const tiny =
-        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAADZSURBVHhe7dBBDcQAEMPAA1b+KI5LS2AIROtI/vgX//7P816mAJKXKIDkJQogeYkCSF6iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkpcogOQlCiB5iQJIXqIAkpc4HuB5P+5DwPD5sak1AAAAAElFTkSuQmCC";
+      const tiny = tinyPng;
       ws.addImages([{ data: tiny, mimeType: "image/png", name: "selftest.png" }]);
       await wait(250);
       const first = ws.snapshot().attachments[0];
@@ -1005,6 +1011,119 @@ function runDraftSelftest(): void {
       );
     }
     manager?.log(`[selftest-draft-ui] ${ui.join(" ")}`);
+
+    /* ---- Agent 运行期间的真实页面发送行为 ----
+     * 真实 Agent 需要 LLM 凭据，自动化里不触发对话；改为在**真实 pi-web 页面**上复现
+     * streaming 时的 Composer 按钮组（send → 引导 / 后续消息），拦截 button.click 不真发消息，
+     * 再执行真正的 buildComposerSendScript 验证按模式选按钮、fieldset 状态与纯图片发送。
+     * 结束恢复 DOM 并 reload 页签，避免把临时图片附件留在原生输入框。 */
+    if (wc && !wc.isDestroyed()) {
+      const stream: string[] = [];
+      try {
+        const sessionKey = String(
+          await wc.executeJavaScript(
+            "(() => { var p=new URLSearchParams(location.search); var s=p.get('session'); var c=p.get('cwd');" +
+              " return s ? 'session:'+s : (c ? 'cwd:'+c : 'new'); })()",
+          ),
+        );
+        const install =
+          "(() => { var shell=document.querySelector('.chat-input-shell');" +
+          " var ta=document.querySelector('.chat-input-shell textarea.chat-input-textarea');" +
+          " if(!shell||!ta) return 'no-composer';" +
+          " var fs=shell.tagName==='FIELDSET'?shell:ta.closest('fieldset');" +
+          " var st=window.__piDesktopStreamTest={ clicks:[], originalClick:HTMLButtonElement.prototype.click," +
+          " originalText:ta.value||'', fieldsetDisabled:fs?!!fs.disabled:null," +
+          " fieldsetBusy:fs?fs.getAttribute('aria-busy'):null, buttons:[], send:null };" +
+          // 拦截点击：只记录点了哪个原生按钮并模拟 tw() 清空，绝不真的把消息发给 Agent
+          " HTMLButtonElement.prototype.click=function(){"+ 
+          " st.clicks.push((this.getAttribute('aria-label')||this.textContent||'').trim());" +
+          " try{ var setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;" +
+          " setter.call(ta,''); ta.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){}" +
+          " try{ var imgs=shell.querySelectorAll('img[src^=\"blob:\"], img[src^=\"data:\"]');" +
+          " for(var j=0;j<imgs.length;j++) imgs[j].parentNode&&imgs[j].parentNode.removeChild(imgs[j]); }catch(e){} };" +
+          " var list=shell.querySelectorAll('button');" +
+          " for(var i=0;i<list.length;i++){ var a=(list[i].getAttribute('aria-label')||'').trim();" +
+          " if(a==='发送'||a==='傳送'||a==='Send'){ st.send=list[i]; break; } }" +
+          " if(st.send) st.send.style.display='none';" +
+          " ['引导','后续消息'].forEach(function(label){ var b=document.createElement('button');" +
+          " b.type='button'; b.setAttribute('aria-label',label); b.textContent=label; b.disabled=false;" +
+          " shell.appendChild(b); st.buttons.push(b); });" +
+          " return 'installed'; })()";
+        stream.push(`install=${String(await wc.executeJavaScript(install, true))}`);
+        const fsState = JSON.parse(
+          String(
+            await wc.executeJavaScript(
+              "(() => { var s=window.__piDesktopStreamTest;" +
+                " return JSON.stringify({disabled:s.fieldsetDisabled,busy:s.fieldsetBusy,buttons:s.buttons.length}); })()",
+            ),
+          ),
+        ) as { disabled: boolean | null; busy: string | null; buttons: number };
+        // 实证：空闲时 fieldset 不禁用（上游只在斜杠命令执行时短暂锁住）
+        stream.push(`idleFieldset=${String(fsState.disabled)} busy=${String(fsState.busy)} steerButtons=${fsState.buttons}`);
+
+        const runMode = async (mode: "send" | "steer" | "followUp", withImage: boolean): Promise<void> => {
+          await wc.executeJavaScript("window.__piDesktopStreamTest.clicks.length = 0");
+          const raw = await wc.executeJavaScript(
+            buildComposerSendScript({
+              text: withImage ? "" : `GUI 模式验证 ${mode}`,
+              sessionKey,
+              mode,
+              images: withImage ? [{ data: tinyPng, mimeType: "image/png", name: "gui.png" }] : [],
+            }),
+            true,
+          );
+          const res = JSON.parse(String(raw)) as { ok: boolean; reason: string };
+          const clicks = JSON.parse(
+            String(await wc.executeJavaScript("JSON.stringify(window.__piDesktopStreamTest.clicks)")),
+          ) as string[];
+          const expected = mode === "send" ? "发送" : mode === "steer" ? "引导" : "后续消息";
+          const clicked = clicks.some((label) => label === expected || label.includes(expected));
+          if (withImage) {
+            stream.push(`imageOnly=${clicked && !/草稿为空/.test(res.reason)} (clicked=${clicked} ok=${res.ok})`);
+          } else {
+            stream.push(`${mode}=${res.ok && clicked} (ok=${res.ok} clicked=${clicked} reason=${res.reason.slice(0, 28)})`);
+          }
+        };
+        await runMode("send", false);
+        await runMode("steer", false);
+        await runMode("followUp", false);
+        await runMode("send", true);
+
+        // fieldset 被锁住时：不再返回笼统的「输入框不可用」，而是按模式给出准确原因
+        await wc.executeJavaScript(
+          "(() => { var s=window.__piDesktopStreamTest;" +
+            " var fs=document.querySelector('.chat-input-shell'); if(fs&&fs.tagName==='FIELDSET') fs.disabled=true;" +
+            " s.clicks.length=0; return 'locked'; })()",
+        );
+        const lockedRaw = await wc.executeJavaScript(
+          buildComposerSendScript({ text: "锁住时的引导", sessionKey, mode: "steer", images: [] }),
+          true,
+        );
+        const locked = JSON.parse(String(lockedRaw)) as { ok: boolean; reason: string };
+        stream.push(
+          `lockedByMode=${!locked.ok && /找不到可用的原生引导按钮/.test(locked.reason) && !/输入框当前不可用/.test(locked.reason)}`,
+        );
+      } catch (error) {
+        stream.push(`error=${String(error)}`);
+      } finally {
+        try {
+          await wc.executeJavaScript(
+            "(() => { var st=window.__piDesktopStreamTest; if(!st) return 'none';" +
+              " HTMLButtonElement.prototype.click=st.originalClick;" +
+              " for(var i=0;i<st.buttons.length;i++){var b=st.buttons[i]; if(b.parentNode) b.parentNode.removeChild(b);}" +
+              " if(st.send) st.send.style.display='';" +
+              " var ta=document.querySelector('.chat-input-shell textarea.chat-input-textarea');" +
+              " if(ta){try{var setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;" +
+              " setter.call(ta,st.originalText); ta.dispatchEvent(new Event('input',{bubbles:true}));}catch(e){}}" +
+              " delete window.__piDesktopStreamTest; return 'restored'; })()",
+          );
+          wc.reload(); // 清掉 paste 进原生 Composer 的临时图片附件，恢复干净页面
+        } catch {
+          // 页面可能已销毁
+        }
+      }
+      manager?.log(`[selftest-draft-stream] ${stream.join(" ")}`);
+    }
   }, 4_000);
 }
 

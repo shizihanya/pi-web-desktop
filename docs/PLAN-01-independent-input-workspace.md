@@ -406,3 +406,50 @@ imageStored=true imagePreview=true submitMenu=true successHintAutoHide=true
 `__PI_DESKTOP_DRAFT_OPEN__` / 常驻 `setInterval`」；`check:draft-workspace` 删掉入口信号测试，
 改为「不再绑定 `console-message`」「每次 dom-ready 只跑一次只读探针」「探针注入失败 → disabled」；
 `check:contracts` 保留「单个主按钮」守卫。
+
+---
+
+## 十四、提交 `ade9ca3` 定向复核
+
+复核上游 `.next/static/chunks/app/page-*.js` 的真实 Composer JSX（不是猜）：
+
+```js
+("fieldset", { disabled: eq, "aria-busy": eq, className: es ? void 0 : "chat-input-shell", … })
+```
+
+- `eq = useState(!1)`，setter `eV` **只在 `tj`（斜杠命令异步执行）里**置 true，`finally` 立即复位。
+  → **Agent 运行时 fieldset 不 disabled**（真实 GUI 也量到 `idleFieldset=false busy=false`）。
+- steer / followUp / send 三个按钮都在这个 fieldset 内；`tT = !!eh.trim() || ew.length>0`，
+  steer / followUp `disabled:!tT`，send `disabled:!eh.trim()&&!ew.length`，`tS` / `tV` 的入口条件都是
+  `(t || ew.length)` → **上游本身支持纯图片，也支持运行中纯图片 steer / followUp**。
+- Enter 分支：`f&&(u||h) ? tV(e.altKey&&h||!u ? "followup" : "steer") : tS()`（§十二 的自动模式依据）。
+
+| # | 复核问题 | 结论 / 处理 |
+| --- | --- | --- |
+| 1 | 发送脚本会不会在找 steer/followUp 之前就因 `fieldset.disabled` 拒绝？ | **代码里确实有这条路径**：`SEND_BODY` 在写入文本、找按钮之前就 `if (fieldset && (fieldset.disabled \|\| aria-busy==='true')) return fail('pi-web 输入框当前不可用')`，对所有模式一刀切。当前 pi-web 版本下 Agent 运行时不命中（fieldset 不锁），但逻辑脆弱且会遮掉按模式判断的能力。**已删掉前置一刀切**，改为 `buttonUsable(b)` 按「本次模式实际要点的按钮」判断（自身 `disabled` / `aria-disabled` / `:disabled` 继承），失败原因带模式名；`fieldset` 锁住但按钮仍可点时 steer 照常可发 |
+| 2 | 纯图片能不能发？ | **不能，确认 bug**：`SEND_BODY` 有 `if (!P.text \|\| !P.text.trim()) return fail('草稿为空')`（编排层 `send()` 是对的，但页面脚本挡住了）；且成功判定 `value.indexOf(P.text) === -1` 在空串时恒为 0，必然等 1500ms 超时误报失败。改为 `hasText \|\| hasImages` 才允许、纯图片不往 textarea 塞空行；成功判定改用「写入后的完整文本 `baselineText` 被清空 **或** 图片附件 chip（`img[src^=blob:]` / `data:`）消失」，两者皆无变化才超时。发送前等 React 渲染完附件 chip（≤600ms）再记基线 |
+| 3 | 连点是否只提交一次？ | 主进程 `SendGate` 拦住 IPC 路径，但**页面 realm 的 `__piDesktopDraftSending` 闸门只在 `setTimeout` 回调里（点击前）才置位**，两次紧邻调用会各进一次等待、各点一次。已把闸门提到脚本最开头（任何 `setTimeout` 之前），所有出口统一 `finish()` 释放，外层 `catch` 也复位 |
+| 4 | Agent 开始/结束后按钮文案是否及时更新？ | **确认不会**：`probeActive()` 只由 `dom-ready` / `did-finish-load` / 会话签名变化触发；Agent 运行时按钮整组替换但不触发这些。已让 `refreshContext()`（`TabManager.notify()` 状态轮询 700ms 必经）按 900ms 节流重跑只读探针，`open()` 也立刻探一次 → 文案在 ~1s 内跟着切，且文案与 `autoMode()` 同源 |
+| 5 | 图片重启丢失有无 UI 提示？ | 之前没有。有附件时面板显示「图片仅保留在本次运行期间，重启应用后需重新附加」 |
+| 6 | 长文本频繁落盘是否阻塞主进程？ | 渲染层已有 80ms debounce（只在停顿时写一次，非每击键）。实测 `saveDrafts` 同步写：1–2 条 84KB 草稿 ≈ 1–2ms；极端 20 条 × 70KB（2.29MB 文件）median 15.8ms / p95 30ms。**正常场景不明显，不改动**：改异步写会引入「退出时未 flush 丢草稿」的新风险，收益不抵复杂度 |
+| 7 | 本次改动自身有无性能回退？ | **有，已修**：加了 900ms 节流重跑探针后，`probeActive()` 仍无条件 `emit()`，而 `onChange` 会把含整篇草稿文本 + 附件的**全量 snapshot 广播到所有窗口** → 100KB 长草稿每 ~1.4s 一次序列化 + IPC，渲染层还会反复重建附件 chip，且非聚焦时可能用旧快照覆盖刚输入的字符。改为只在 `typography` / `modes` / `compat` **真的变化**时才广播（`setCompat` 已按 verdict 去重），结果不变的轮询零广播。`check:draft-workspace` 新增「3 轮状态轮询零额外快照」与「模式真变化时确实广播」两条断言。其余开销实测：探针本身每 ~1.4s 一次 `executeJavaScript`（2.5KB 脚本 + 几次 querySelector / getComputedStyle，<1ms，面板关闭时零探针）；发送时 `attachmentCount()` 最多 5+10 次 querySelectorAll，可忽略；`atob` + 逐字节解码 1MB 图 4ms / 5MB 图 8ms / 10×5MB 79ms（一次性、原路径，纯图片现在也会走到） |
+
+新增 `check:composer-send`（`npm run check:composer-send`）：用最小 DOM 桩在 `vm` 里**真正执行**
+`buildComposerSendScript`，按 pi-web 真实语义建模（空输入按钮置灰、`tw()` 成功清空 / `nU()` 失败放回、
+附件 `img[blob:/data:]`），覆盖空闲 send、运行中 steer / followUp、纯文字、文字+图片、纯图片、
+两者皆空、发送失败保留、连点去重、会话变化、fieldset 锁住按模式拒绝等 19 条断言。
+`check:composer-bridge` / `check:draft-workspace` 同步补齐静态守卫与编排层用例。
+
+真实 GUI（`PI_WEB_DESKTOP_SELFTEST_DRAFT=1`）：在**真实 pi-web 页面**上复现 streaming 的按钮组
+（send → 引导 / 后续消息），拦截 `button.click` 不真发消息，再执行真正的发送脚本：
+
+```
+[selftest-draft-stream] install=installed idleFieldset=false busy=false steerButtons=2
+  send=true (ok=true clicked=true) steer=true (ok=true clicked=true)
+  followUp=true (ok=true clicked=true) imageOnly=true (clicked=true ok=true)
+  lockedByMode=true
+```
+
+> 真实 Agent 运行需要 LLM 凭据，自动化里不触发对话；这里的 streaming 状态是**等价 DOM 复现**，
+> 加上只读探针实测的 fieldset 属性，合起来验证「发送脚本在 Agent 运行期间的行为」。
+> 恢复脚本会还原 DOM / `HTMLButtonElement.prototype.click` / textarea，并 reload 页签清掉临时附件。
