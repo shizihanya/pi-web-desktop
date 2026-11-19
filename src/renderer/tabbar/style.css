@@ -568,3 +568,348 @@ body {
 .dot.err {
   background: var(--err);
 }
+
+/* ---------------- 桌面增强：独立输入工作区 ----------------
+   面板画在窗口自己的渲染层；主进程把 pi-web 视图 bounds 收窄让出右侧空间，
+   因此不会覆盖对话，也不往 pi-web 页面里塞任何节点。
+   配色直接复用页签栏已经同步好的 pi-web CSS 变量。 */
+
+.draft-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted, var(--text, #6e7781));
+  cursor: pointer;
+}
+.draft-toggle:hover,
+.draft-toggle.is-on {
+  background: var(--bg-selected, rgba(127, 127, 127, 0.16));
+  color: var(--accent, #0969da);
+}
+
+.draft-panel {
+  position: fixed;
+  right: 0;
+  top: var(--tabbar-height, 40px);
+  bottom: 0;
+  width: 380px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  z-index: 15;
+  border-left: 1px solid var(--border, #d0d7de);
+  background: var(--bg-panel, var(--bg, #ffffff));
+  color: var(--text, #1f2328);
+  box-shadow: -2px 0 8px rgba(0, 0, 0, 0.06);
+}
+
+.draft-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #d0d7de);
+  background: var(--bg, #ffffff);
+}
+.draft-title {
+  font-weight: 600;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.draft-tab {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-muted, var(--text-dim, #6e7781));
+}
+.draft-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  background: var(--bg, #ffffff);
+  color: var(--text, #1f2328);
+  cursor: pointer;
+  font-size: 17px;
+  line-height: 1;
+}
+.draft-close:hover {
+  background: var(--bg-selected, rgba(127, 127, 127, 0.16));
+}
+
+.draft-compat {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--border, #d0d7de);
+  background: color-mix(in srgb, var(--accent, #0969da) 10%, transparent);
+  color: var(--text-muted, var(--text, #6e7781));
+  word-break: break-word;
+}
+.draft-compat[data-level="disabled"] {
+  background: color-mix(in srgb, #d1242f 14%, transparent);
+}
+.draft-compat[data-level="compatible"] {
+  display: none;
+}
+
+/* 字体不写死：draft-panel.ts 会直接读 pi-web 原生 textarea 的 computed style 并应用，
+   保证面板和原生输入框用同一套字体 / 字号 / 行高 / 颜色。下面只是没有探针时的兜底。 */
+.draft-editor {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 120px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  background: transparent;
+  color: var(--text, #1f2328);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  tab-size: 2;
+}
+
+/* 拖动分隔条：向左拖变宽、向右拖变窄 */
+.draft-resizer {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  z-index: 20;
+  cursor: col-resize;
+  background: transparent;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+.draft-resizer:hover,
+.draft-resizer.is-dragging {
+  background: var(--accent, #0969da);
+  opacity: 0.55;
+}
+
+/* 图片附件 */
+.draft-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border, #d0d7de);
+  background: var(--bg, #fff);
+}
+.draft-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 5px;
+  font-size: 11px;
+  color: var(--text-muted, var(--text, #6e7781));
+  background: var(--bg-panel, #f5f5f5);
+}
+.draft-attachment span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 150px;
+}
+.draft-attachment button {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+/* 附加文件：图标 / 尺寸 / 配色与 pi-web 原生「附加文件」按钮一致 */
+.draft-attach {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 9px;
+  background: none;
+  color: var(--text-muted, var(--text-dim, #6e7781));
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.draft-attach:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+  color: var(--text, #1f2328);
+}
+.draft-attach.has-images {
+  color: var(--accent, #0969da);
+}
+/* 附件 chip 整块可点开大图预览 */
+.draft-attachment {
+  cursor: zoom-in;
+}
+.draft-attachment:hover {
+  border-color: var(--accent, #0969da);
+}
+
+.draft-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border, #d0d7de);
+  background: var(--bg, #ffffff);
+}
+.draft-count,
+.draft-hint {
+  font-size: 11px;
+  color: var(--text-muted, var(--text-dim, #6e7781));
+  white-space: nowrap;
+}
+.draft-hint {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 唯一的主提交按钮：文案随主进程自动判定的模式变化，没有下拉 / 第二按钮 */
+.draft-send {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--accent, #0969da);
+  color: var(--accent-contrast, #ffffff);
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.draft-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+/* 「在原生输入框中继续」收进编辑器右键菜单，不占可见空间 */
+.draft-context {
+  position: fixed;
+  z-index: 60;
+  padding: 4px;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 8px;
+  background: var(--bg-panel, var(--bg, #fff));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+}
+.draft-context button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text, #1f2328);
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.draft-context button:hover {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+  color: var(--accent, #0969da);
+}
+
+.draft-result {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.5;
+  border-top: 1px solid var(--border, #d0d7de);
+  word-break: break-word;
+  transition: opacity 0.25s;
+}
+.draft-result[data-ok="false"] {
+  background: color-mix(in srgb, #d1242f 12%, transparent);
+}
+
+/* 图片预览：面板内浮层，只盖编辑区、不压暗对话；图片按面板尺寸 contain 居中 */
+.draft-lightbox {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #ffffff);
+}
+.draft-lightbox-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border, #d0d7de);
+  background: var(--bg-panel, #f5f5f5);
+  font-size: 12px;
+  color: var(--text-muted, var(--text, #6e7781));
+}
+.draft-lightbox-head span {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.draft-lightbox-close {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  background: var(--bg, #fff);
+  color: var(--text, #1f2328);
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+.draft-lightbox-close:hover {
+  color: var(--accent, #0969da);
+}
+.draft-lightbox-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: var(--bg-panel, #f5f5f5);
+}
+.draft-lightbox-body img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+}

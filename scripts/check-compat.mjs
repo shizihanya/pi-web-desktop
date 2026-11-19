@@ -119,11 +119,53 @@ verdict(
 verdict("通知：尚无结果 → unverified", evaluateNotificationPatch(null, { enabled: true }), "unverified");
 
 /* ------------------------- composerCompatible ------------------------- */
-const composer = evaluateComposer();
+const composerProbe = (overrides = {}) => ({
+  textarea: true, scoped: true, sendButton: true, sendEnabled: true,
+  busy: false, pageReady: true, error: null,
+  modes: { send: true, steer: false, followUp: false, attach: true }, ...overrides,
+});
+verdict("Composer：主输入框 + 原生发送按钮齐备 → compatible", evaluateComposer(composerProbe()), "compatible");
+verdict(
+  "Composer：输入框为空时发送按钮 disabled（pi-web 正常状态）仍算 compatible",
+  evaluateComposer(composerProbe({ sendEnabled: false })),
+  "compatible",
+);
+verdict("Composer：尚无探针 → unverified（禁止发送）", evaluateComposer(null), "unverified");
+verdict(
+  "Composer：页面未加载完 → unverified，不误判为不兼容",
+  evaluateComposer(composerProbe({ pageReady: false, textarea: false })),
+  "unverified",
+);
+verdict(
+  "Composer：找不到主输入框 → disabled（禁止发送，原生输入框不受影响）",
+  evaluateComposer(composerProbe({ textarea: false })),
+  "disabled",
+);
+verdict(
+  "Composer：作用域不明（可能只找到 side chat）→ disabled，禁止错误发送",
+  evaluateComposer(composerProbe({ scoped: false })),
+  "disabled",
+);
+verdict(
+  "Composer：所有提交按钮都找不到 → degraded",
+  evaluateComposer(composerProbe({ sendButton: false, modes: { send: false, steer: false, followUp: false, attach: false } })),
+  "degraded",
+);
+verdict(
+  "Composer：Agent 运行时 send 被 steer/followUp 替换 → 仍 compatible（不误降级）",
+  evaluateComposer(composerProbe({ sendButton: false, modes: { send: false, steer: true, followUp: true, attach: true } })),
+  "compatible",
+);
+verdict("Composer：probe 注入失败 → disabled", evaluateComposer(composerProbe({ error: "boom" })), "disabled");
+verdict(
+  "Composer：增强被环境变量关闭 → disabled",
+  evaluateComposer(composerProbe(), { enabled: false }),
+  "disabled",
+);
 check(
-  "扩展输入框增强已移除：恒为 disabled 且明确说明原生输入框不受影响",
-  composer.level === "disabled" && composer.reason.includes("原生输入框"),
-  JSON.stringify(composer),
+  "Composer 不兼容结论写明「原生输入框不受影响」或「禁止发送」",
+  /原生输入框不受影响|禁止发送/.test(evaluateComposer(composerProbe({ textarea: false })).reason),
+  evaluateComposer(composerProbe({ textarea: false })).reason,
 );
 
 /* ------------------------- 独立报告 / 去重 ------------------------- */
@@ -142,7 +184,7 @@ check(
   report.features.statusProbe.level === "compatible" &&
     report.features.themeProbe.level === "degraded" &&
     report.features.notification.level === "disabled" &&
-    report.features.composer.level === "disabled",
+    report.features.composer.level === "unverified",
   JSON.stringify(report.features),
 );
 check("版本号只记录、不参与判定", report.piWebVersion === "0.17.0");

@@ -1,4 +1,4 @@
-import type { ShellApi, SettingsApi, TabbarApi } from "../shared/types";
+import type { DraftApi, ShellApi, SettingsApi, TabbarApi } from "../shared/types";
 
 declare global {
   interface Window {
@@ -8,6 +8,8 @@ declare global {
     piWebTabs: TabbarApi;
     /** 设置窗口用 */
     piWebSettings: SettingsApi;
+    /** 桌面增强：独立输入工作区面板 */
+    piWebDrafts: DraftApi;
   }
 }
 

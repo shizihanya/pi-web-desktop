@@ -157,6 +157,42 @@ const FEATURES = [
     ],
   },
   {
+    id: "composer",
+    label: "独立输入工作区（复用 pi-web 原生 Composer 发送）",
+    ours: [
+      {
+        file: "src/main/tabs/composer-bridge.ts",
+        needles: [
+          ".chat-input-shell textarea.chat-input-textarea",
+          "HTMLTextAreaElement.prototype",
+          "dispatchEvent(new Event('input'",
+          "__piDesktopDraftSending",
+          "pi-enter-send-mode",
+          "sessionKey",
+          "getComputedStyle(ta)",
+          "findButton(scope, 'steer')",
+          "ClipboardEvent('paste'",
+          "引导",
+          "后续消息",
+        ],
+      },
+      {
+        file: "src/main/tabs/draft-model.ts",
+        needles: ["sessionKeyFromPath", "verifyDraftTarget", "draftKey"],
+      },
+      {
+        file: "src/main/tabs/draft-workspace.ts",
+        needles: ["buildComposerSendScript", "COMPOSER_PROBE_SCRIPT", "evaluateComposer"],
+      },
+    ],
+    upstream: [
+      {
+        dir: ".next/static/chunks/app", pattern: /^page-.*\.js$/,
+        needles: ['className:"chat-input-textarea"', "chat.send", "chat-input-shell", "pi-enter-send-mode"],
+      },
+    ],
+  },
+  {
     id: "notification",
     label: "Windows 通知增强",
     ours: [
@@ -210,6 +246,27 @@ if (!markerMatch || !themeProbe.includes(`console.info("${markerMatch[1]}")`)) {
 }
 // 第三阶段拆分后，TabManager 主逻辑不应再内联页面注入脚本
 const tabManager = readText("src/main/tabs/tab-manager.ts");
+// 提交模式全自动：只有一个主按钮，没有 ▾ 下拉 / 独立模式栏 / 第二个「原生输入框」按钮
+const tabbarHtml = readText("src/renderer/tabbar/index.html");
+const noManualMode =
+  !tabbarHtml.includes("draft-modebar") &&
+  !tabbarHtml.includes('id="draft-native"') &&
+  !tabbarHtml.includes('id="draft-submit-more"') &&
+  !tabbarHtml.includes('id="draft-menu"') &&
+  tabbarHtml.includes('id="draft-send"');
+if (!noManualMode) {
+  fail("[guard] 提交模式应全自动：只允许一个主按钮，不得有 ▾ 下拉 / 手动模式栏");
+  failures += 1;
+} else {
+  pass("[guard] 提交模式全自动，面板只有单个主按钮");
+}
+// 应用退出 / 回启动页时 destroy() 会逐个 disposeTab，不能把它当成「用户关页签」清空草稿
+if (!tabManager.includes("if (!options.keepWindow) this.options.onTabClosed?.(tab.id);")) {
+  fail("[guard] onTabClosed 未用 keepWindow 守卫：退出时会清光 drafts.json，重启恢复永远失效");
+  failures += 1;
+} else {
+  pass("[guard] 退出时逐个销毁视图不会误清草稿");
+}
 if (tabManager.includes("String.raw`")) {
   fail("[guard] tab-manager.ts 里又出现了内联注入脚本（应放在独立模块里）");
   failures += 1;
@@ -261,7 +318,7 @@ if (!install) {
       pass(`[${feature.id}] 上游契约未见破坏（不等于功能完全兼容，仍需人工回归）`);
     }
   }
-  info(`composer：扩展输入框增强已移除，无注入、无契约（composerCompatible=disabled）`);
+  info(`composer：独立输入工作区依赖原生 Composer 选择器（含 steer/followUp 标签）；契约破坏即禁止发送、原生输入框不受影响（见 check:composer-bridge）`);
 }
 
 info(`pi-web 运行记录目录（只读，不写）：${join(homedir(), ".pi", "agent", "pi-web-run")}`);

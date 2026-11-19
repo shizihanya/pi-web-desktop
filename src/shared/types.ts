@@ -136,6 +136,115 @@ export interface TabbarApi {
 
 export type { SplitLayout, SplitPreset, SplitSnapshot } from "./split";
 
+/* --------------------- 桌面增强：独立输入工作区 --------------------- */
+
+/** 与 compat.ts 的 CompatLevel 保持一致（这里不 import 主进程模块） */
+export type DraftCompatLevel = "compatible" | "degraded" | "unverified" | "disabled";
+
+export type ComposerMode = "send" | "steer" | "followUp";
+
+/** 从 pi-web 原生 textarea 的 computed style 读来，保证面板字体与原生一致 */
+export interface DraftTypography {
+  fontFamily: string;
+  fontSize: string;
+  lineHeight: string;
+  color: string;
+  background: string;
+  letterSpacing: string;
+}
+
+/** pi-web 当前提供了哪些原生按钮 */
+export interface DraftModes {
+  send: boolean;
+  steer: boolean;
+  followUp: boolean;
+  attach: boolean;
+}
+
+/** 面板里附加的图片（base64 只在主进程内存里，快照只给元数据） */
+export interface DraftAttachment {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+}
+
+/** 点击附件 chip 时按需取回图片数据（不放在快照里，避免每次 emit 都传大 base64） */
+export interface DraftImageData {
+  data: string;
+  mimeType: string;
+  name: string;
+}
+
+export interface DraftSnapshot {
+  /** 桌面增强是否启用（关闭后 pi-web 原生 Composer 完全不受影响） */
+  enabled: boolean;
+  /** 右侧编辑面板是否展开 */
+  open: boolean;
+  /** 面板占用的宽度（主进程据此给 pi-web 视图留出空间，而不是盖住对话） */
+  panelWidth: number;
+  minPanelWidth: number;
+  maxPanelWidth: number;
+  /** 跟随原生输入框的字体 / 字号 / 行高 / 颜色 */
+  typography: DraftTypography | null;
+  /** 当前可用的原生发送模式（Agent 运行时会出现 steer / followUp） */
+  modes: DraftModes;
+  /** 当前自动判定的提交模式（空闲=send，Agent 运行中=steer/followUp），主按钮据此显示文案 */
+  mode: ComposerMode;
+  /** 已附加的图片 */
+  attachments: DraftAttachment[];
+  /** 当前绑定的页签 / 会话；草稿按 tabId + sessionKey 隔离 */
+  tabId: string | null;
+  tabTitle: string;
+  sessionKey: string | null;
+  text: string;
+  compat: { level: DraftCompatLevel; reason: string };
+  sending: boolean;
+  canSend: boolean;
+  lastResult: DraftSendResult | null;
+}
+
+export interface DraftSendResult {
+  ok: boolean;
+  reason: string;
+}
+
+/** 面板渲染层专用的极小 API（不暴露任何 Node / Electron 能力） */
+export interface DraftApi {
+  get(): Promise<DraftSnapshot>;
+  setText(text: string): Promise<void>;
+  open(): Promise<void>;
+  close(): Promise<void>;
+  toggle(): Promise<void>;
+  /** 拖动分隔条调整面板宽度 */
+  setWidth(px: number): Promise<void>;
+  /** 面板里粘贴 / 拖入的图片（base64 不带 data: 前缀） */
+  addImages(images: { data: string; mimeType: string; name: string }[]): Promise<void>;
+  removeImage(id: string): Promise<void>;
+  /** 点击附件时按需取回图片，用于面板内大图预览 */
+  getImage(id: string): Promise<DraftImageData | null>;
+  /** 把草稿放进原生输入框并把焦点给它，使用原生全部能力继续编辑 */
+  openInNative(): Promise<DraftSendResult>;
+  /** 提交模式由主进程按 pi-web 当前状态自动决定 */
+  send(): Promise<DraftSendResult>;
+  onChange(cb: (snapshot: DraftSnapshot) => void): () => void;
+}
+
+export const DRAFT_IPC = {
+  get: "drafts:get",
+  setText: "drafts:set-text",
+  open: "drafts:open",
+  close: "drafts:close",
+  toggle: "drafts:toggle",
+  setWidth: "drafts:set-width",
+  addImages: "drafts:add-images",
+  removeImage: "drafts:remove-image",
+  getImage: "drafts:get-image",
+  openInNative: "drafts:open-in-native",
+  send: "drafts:send",
+  changedEvent: "drafts:changed",
+} as const;
+
 export const TAB_IPC = {
   list: "tabs:list",
   open: "tabs:open",

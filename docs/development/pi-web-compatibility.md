@@ -18,6 +18,14 @@
 | 6 | 主题探测脚本在 `tab-manager.ts` | 属实 | 已抽到 `theme-probe.ts`，`check:theme` 改为检测该文件 |
 | 7 | `docs/ANALYSIS.md` 记录的上游版本 0.15.0 | 本机已升到 0.17.0 | `check:contracts` 只读扫描确认 §1 的契约在 0.17.0 仍存在；但静态扫描不等于功能完全兼容 |
 
+> **Plan 01 后续更新（本轮）**：上表第 1 行「已确认不恢复」指的是**旧设计**（`composer-expand.ts`：
+> 把面板塞进 pi-web 页面 DOM、停靠私有 `#file-panel`，依赖 5 条上游私有选择器，上游一改就碎）。
+> Plan 01 没有恢复那个文件，而是用**不同设计**重新引入桌面增强：Electron 窗口自己的渲染层画右侧面板，
+> 主进程只收窄 `WebContentsView` bounds 让出 380px；页面 realm 里只剩「只读探针 +
+> 复用原生发送按钮」，不再注入任何可见按钮。因此 `composerCompatible` 不再是恒为 `disabled`，改为按实际探针判定；
+> 本文 §1 / §2 / §3 / §6 / §7 已同步更新。历史上被删的 `check-composer-expand.mjs` 没有恢复。
+> 实现与调查结论见 [Plan 01 独立输入工作区](../PLAN-01-independent-input-workspace.md)。
+
 **未经验证的兼容性一律不标记为「完全兼容」**：`check:contracts` 的结论是「契约未见破坏」，
 运行时结论是 `compat.ts` 的四级判定，最终仍需 §3 的人工回归。
 
@@ -43,7 +51,7 @@
 | Windows 通知增强 | `ServiceWorkerRegistration.prototype.showNotification`、`window.Notification`、`document.hasFocus`、`__piDesktopWindowFocused` | `src/main/tabs/notification-patch.ts`、`tab-manager.ts` `syncWindowFocus()` | Web API / DOM | `.next/static/chunks/app/page-*.js` 中 `showNotification` | **高** | 任务完成不出 toast / 失焦误判 | 注入失败记诊断；上游改实现时优先降级，保留原生 |
 | 登录态 | `partition:"persist:piweb"` + Cookie / Basic Auth；接口请求在**页面 realm** 内发起 | `tab-manager.ts`、`tab-status.ts` | Web API | 上游 `/login` + `PI_WEB_PASSWORD` | 中 | 状态接口 401 | 换一个有效页面作为状态源；主进程不保存密码 |
 | 服务更新 | `npm view` / `npm install -g @agegr/pi-web@x.y.z` / `pi-web version` | `src/main/server/pi-web-update.ts`、`settings-service.ts`、`runtime-update.ts` | CLI | 全局 npm 包 | **高** | 影响终端里的 pi-web、可能半更新 | 见 §6（审查 + 失败时恢复旧版本并验证，未引入多版本 Runtime） |
-| 大输入框 / 扩展编辑 | — | **已移除**（`25d37d5`） | — | — | — | 无 | 原生输入框始终可用 |
+| **独立输入工作区（Plan 01 / 01.1）** | `.chat-input-shell textarea.chat-input-textarea`（主输入框，side chat 无此包裹）、提交按钮多语言标签 `chat.send`（发送/傳送/Send）、`chat.steer`（引导/引導/Steer）、`chat.followUp`（后续消息/後續訊息/Follow-up）、`button[title=chat.attachFiles]`（附加文件）、原生 `onPaste` 从 `clipboardData.items` 取 `image/*`、textarea 的 computed `font-family/font-size/line-height/color`、`fieldset.chat-input-shell[disabled\|aria-busy]`、`?session=` / `?cwd=`、`localStorage["pi-enter-send-mode"]`（仅诊断） | `src/main/tabs/composer-bridge.ts`（只读探针 / 入口 / 复用原生发送）、`draft-model.ts`、`draft-workspace.ts`、`src/renderer/tabbar/draft-panel.ts` | DOM / Web API | `.next/static/chunks/app/page-*.js`（`className:"chat-input-textarea"`、`chat.send`、`chat-input-shell`、`pi-enter-send-mode`） | **高** | 禁止错误发送（面板 `disabled`），但**原生输入框始终可用**；绝不自行调用 `/api/agent/*` | 探针不通过 / 作用域不明 / 注入失败 → `disabled` 且禁止发送；发送脚本二次复核会话与发送按钮；`check:composer-bridge` 锁语法与安全契约 |
 
 > 刻意**不依赖**：`pi-web:unread-session-ids`（跨页签共享的全局未读集合，会让所有页签一起亮）、
 > `.next` 内部 chunk 文件名 / 内容、pi-web 源码文件、任何本地 `@agegr/pi-web` 依赖或补丁包。
@@ -53,7 +61,7 @@
 
 ## 2. 功能级兼容性检测
 
-不建版本号适配系统、不建 Adapter 框架。四个增强各自给出独立结论
+不建版本号适配系统、不建 Adapter 框架。五个增强各自给出独立结论
 （`src/main/tabs/compat.ts`，纯逻辑，可被 `npm run check:compat` 直接测试）：
 
 | 结果字段 | 判定依据（实际探测，不看版本号） | compatible | degraded / unverified / disabled |
@@ -61,7 +69,7 @@
 | `statusProbeCompatible` | `/api/agent/running` 返回结构 + 会话定位结果 | 三个数组都存在且最近一次请求成功 | 请求失败 → 沿用最后有效快照；从未成功但有 DOM/URL 依据 → DOM 兜底；页面已加载却无依据 → `unverified`（做契约检测，不误报兼容） |
 | `themeProbeCompatible` | 主题探测脚本返回的 `fromPage` 与 CSS 变量数 | 读到 ≥3 个变量 | 变量不足 / 脚本报错 → `degraded` / `disabled`，**保留当前主题缓存**，不影响 pi-web 显示 |
 | `notificationCompatible` | 通知补丁注入后返回的诊断 JSON | 回落、焦点同步、标题包装都幂等安装 | Web API 缺失 / SW 补丁没装上 / 注入报错 → `degraded` / `disabled`，**优先降级而不是强行改写上游新实现** |
-| `composerCompatible` | 无注入 | — | 恒为 `disabled`：扩展输入框功能已移除，pi-web 原生输入框不受影响 |
+| `composerCompatible` | 只读探针：主输入框 + `.chat-input-shell` 作用域 + 任一原生提交按钮（send / steer / followUp）；页面 realm 入口安装结果 | 输入框 / 作用域 / 任一提交按钮齐备 | 页面未加载完 → `unverified`；所有提交按钮都找不到 → `degraded`；找不到输入框 / 作用域不明 / 注入报错 → `disabled`，**禁止发送**，原生输入框不受影响。两个易踩的坑：pi-web 空输入时 `发送` 按钮本来就是 `disabled`；Agent 运行时 `发送` 会被 `引导/后续消息` 替换——两者都不能误判为不兼容 |
 
 处理矩阵：
 
@@ -79,6 +87,7 @@
 PI_WEB_DESKTOP_DISABLE_STATUS_PROBE
 PI_WEB_DESKTOP_DISABLE_THEME_PROBE
 PI_WEB_DESKTOP_DISABLE_NOTIFICATION_PATCH   # 只在 Windows 生效
+PI_WEB_DESKTOP_DISABLE_DRAFT_WORKSPACE       # 独立输入工作区（关闭后页面零注入）
 ```
 
 **边界**：`check:contracts` 的静态扫描只能发现「字符串层面」的契约破坏。
@@ -91,8 +100,8 @@ PI_WEB_DESKTOP_DISABLE_NOTIFICATION_PATCH   # 只在 Windows 生效
 每次 `npm i -g @agegr/pi-web@latest`（或设置页「检查更新」）之后，按顺序执行：
 
 ```powershell
-npm run check:all      # check（8 项静态/纯逻辑回归）+ smoke（真起一个临时 pi-web 服务）
-npm run app            # 再按下面 7 条人工过一遍
+npm run check:all      # check（typecheck + 16 项静态/纯逻辑回归）+ smoke（真起一个临时 pi-web 服务）
+npm run app            # 再按下面 8 条人工过一遍
 ```
 
 | # | 检查项 | 怎么验 | 不通过时的处理 |
@@ -100,10 +109,11 @@ npm run app            # 再按下面 7 条人工过一遍
 | 1 | 页面正常加载 | 主窗口出现 pi-web，无白屏 / 无 splash 报错 | 看 `server.log`；`check:contracts` 结果 |
 | 2 | 会话正常打开 | 侧栏点一个会话，URL 出现 `?session=`；重启应用后恢复 | `smoke` 的 `/?session=` 断言 |
 | 3 | 消息正常发送 | 发一条消息并收到回答 | 与桌面增强无关；若失效先怀疑上游本身 |
-| 4 | 大输入框正常工作 | **该增强已确认不恢复**，本条退化为「pi-web 原生输入框可正常收发消息」 | 若原生输入框异常，与桌面增强无关，先怀疑上游本身 |
+| 4 | 独立输入工作区 / 原生输入框 | 面板能展开、字体与原生一致、可拖宽度、草稿按页签 + 会话隔离、图片可点开预览；提交模式**全自动**（单个主按钮随 pi-web 状态切文案，无下拉），「在原生输入框中继续」收进编辑器右键菜单；发送复用原生输入框与提交按钮；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 看 `sendPreflight` / `noInjectedEntry` / `fontMatch` / `resized` / `singleSubmit` / `autoModeIdle` / `imgVisible` / `successHintAutoHide`。另验「增强关闭时 pi-web 原生输入框仍能正常收发消息」 | 若 `[compat] composer` 为 `disabled`，增强会禁止发送并显示原因，但原生输入框必须照常可用；若上游改了提交按钮标签，`check:contracts` 的 composer 只读扫描会先报出来 |
 | 5 | Agent 状态正常显示 | 后台页签跑任务 → 转圈；回答完毕 → 蓝点；等确认 → 橙点；切到该页签后提示消失。`PI_WEB_DESKTOP_DEBUG_STATUS=1` 看 `[status]` 日志，session 应与该页签 URL 一致 | `statusProbeCompatible` 降级 → 检查 `/api/agent/running` 返回结构与侧栏选择器 |
 | 6 | 主题正常同步 | 切 `mist` / `pine` / `sand` 等不同主题，页签栏与窗口控件 ≤1s 跟随；冷启动不闪浅色 | `themeProbeCompatible` 降级 → 检查 CSS 变量名 |
 | 7 | 通知正常工作 | 任务完成时把窗口失焦，仍弹 Windows toast 且标题带页签名；`PI_WEB_DESKTOP_DEBUG_NOTIFY=1` 看注入日志 | `notificationCompatible` 降级 → 检查上游是否还在用 `showNotification` |
+| 8 | 独立输入工作区增强关闭时 | `PI_WEB_DESKTOP_DISABLE_DRAFT_WORKSPACE=1 npm run app`：页签栏按钮置灰、页面零注入，pi-web 原生 Composer 完整可用 | 若原生输入受影响，说明注入边界被破坏，先查 `composer-bridge.ts` |
 
 补充（回归重点）：
 
@@ -112,7 +122,7 @@ npm run app            # 再按下面 7 条人工过一遍
 - 服务重启（`tabs.reloadAll()`）后状态能重新初始化，不残留旧的 running。
 - 扩展增强全部关闭时（`§2` 的三个环境变量），pi-web 仍能正常收发消息。
 
-输出：把结果记回本文（版本、日期、7 条结论、`check:all` 输出）；发现契约破坏时
+输出：把结果记回本文（版本、日期、8 条结论、`check:all` 输出）；发现契约破坏时
 先按 §2 降级，再更新 §1 清单与 `scripts/check-contracts.mjs` 的依赖表。
 
 ---
@@ -180,7 +190,7 @@ npm run app            # 再按下面 7 条人工过一遍
 | --- | --- |
 | `src/main/tabs/tab-status.ts` | 重写：拆成「全局状态脚本」+「页签会话脚本」，全局脚本安装时不发请求 |
 | `src/main/tabs/status-model.ts` | 新增：纯计算（全局快照 + sessionId → running/awaiting/unknown） |
-| `src/main/tabs/compat.ts` | 新增：四个功能级兼容性判定 + 去重记录器 |
+| `src/main/tabs/compat.ts` | 新增：四个功能级兼容性判定 + 去重记录器（Plan 01 后 `composer` 改为按只读探针判定） |
 | `src/main/tabs/theme-probe.ts` | 新增：从 `tab-manager.ts` 抽出主题探测脚本 |
 | `src/main/tabs/notification-patch.ts` | 新增：抽出 Windows 通知补丁，返回 JSON 诊断，补只读契约检测脚本 |
 | `src/main/tabs/tab-manager.ts` | 接入共享快照、状态源换源、功能开关、兼容性记录；移除内联脚本 |
@@ -231,8 +241,16 @@ npm run app            # 再按下面 7 条人工过一遍
   同一批信号 120ms 合并；兜底轮询从 1s 降到 5s。仍然不往 pi-web 页面塞 preload，
   读不到变量时保留当前主题缓存、不影响 pi-web 显示。`check:theme-manager` 覆盖
   主题切换、自定义主题、页面未加载完、页面失效、重载、缓存恢复。
-- **第五阶段 大输入框**：按确认结论**不恢复**，`composerCompatible=disabled`，
-  回归清单第 4 条改为「原生输入框可用」。
+- **第五阶段 大输入框**：按确认结论**不恢复旧设计**（`composer-expand.ts` 未恢复、
+  `check-composer-expand.mjs` 未恢复）。Plan 01 另起一套不同设计，见下。
+- **Plan 01 独立输入工作区（已做 MVP）**：Electron 侧独立面板 + Electron 侧草稿状态，
+  页面 realm 只跑只读探针 / 复用原生发送按钮（不注入可见按钮）；`composerCompatible` 改为
+  按实际探针判定（不再恒为 `disabled`）。新增 `draft-model.ts`（纯逻辑）、
+  `draft-persistence.ts`（`drafts.json`）、`draft-workspace.ts`（编排）、
+  `composer-bridge.ts`（注入脚本）、`src/renderer/tabbar/draft-panel.ts`（面板 UI）；
+  `tab-manager.ts` 只加 `reservedRightWidth` 与三个回调，不重构 Composer / TabManager。
+  回归：`check:draft-model` / `check:composer-bridge` / `check:draft-workspace` +
+  真实 Electron GUI 自测（`PI_WEB_DESKTOP_SELFTEST_DRAFT=1`）。
 - **第六阶段 崩溃恢复（已做）**：`tab-lifecycle.ts` 明确五种状态；`render-process-gone`
   只标记 Crashed、保留页签与 `tab.path` 会话 URL、停止该页签的状态请求源，
   **不销毁页签、不自动重载、不停服务**；页签栏显示「↻ 重新加载」，右键菜单文案改为
@@ -249,7 +267,7 @@ npm run app            # 再按下面 7 条人工过一遍
   给出可执行的手动命令。「更新成功但启动失败」这条也走同一回滚路径。
   registry 不可用 / 多实例占用 / 端口被占仍由原有分支处理；更新中断（进程被杀）时
   服务已停，下次启动由健康监护自愈，但全局包可能半更新 —— 仍属已知风险，不做自动修复。
-- **第八阶段 自动化回归（已做）**：`npm run check` 现包含 typecheck + 13 项回归（见 §7），页签创建/关闭/
+- **第八阶段 自动化回归（已做）**：`npm run check` 现包含 typecheck + 16 项回归（见 §7，Plan 01 新增 3 项），页签创建/关闭/
   固定/移动/恢复、状态、兼容性、生命周期、Runtime 回滚决策都有不依赖 GUI 的断言。
   GUI 人工清单仍在 `docs/TESTING.md`。
 - **分屏已知限制（按计划不改算法）**：`src/shared/split.ts` 保持原样。窗口内容区小于
@@ -262,12 +280,14 @@ npm run app            # 再按下面 7 条人工过一遍
 
 | 命令 | 作用 | 需要 GUI / 联网 |
 | --- | --- | --- |
-| `npm run check` | typecheck + 13 项静态/纯逻辑回归（契约、主题、状态、分屏、页签、生命周期、Runtime 等） | 否 / 否 |
+| `npm run check` | typecheck + 16 项静态/纯逻辑回归（契约、主题、状态、分屏、页签、生命周期、Runtime、草稿、Composer 桥接、工作区编排） | 否 / 否 |
 | `npm run check:all` | `check` + `smoke`（真起临时 pi-web 服务） | 否 / 否（需本机装了 pi-web） |
 | `npm run check:contracts` | 内部依赖漂移 + 上游 `.next` 只读契约扫描 + 零侵入硬约束 | 否 / 否 |
 | `check:status` / `check:status-model` / `check:status-manager` | 注入脚本 / 状态计算 / 编排 | 否 / 否 |
 | `check:theme` / `check:theme-manager` / `check:notification` / `check:notification-bridge` | 脚本 + 管理器 | 否 / 否 |
 | `check:compat` / `check:split` / `check:lifecycle` / `check:tab-model` / `check:runtime-update` | 兼容性 / 分屏 / 生命周期 / 页签 / Runtime 回滚 | 否 / 否 |
+| `check:draft-model` / `check:composer-bridge` / `check:draft-workspace` | 草稿隔离 / 注入脚本安全契约 / 工作区编排（成功清空、失败保留、连点去重、不兼容禁止发送） | 否 / 否 |
+| `PI_WEB_DESKTOP_SELFTEST_DRAFT=1 npm run app` | 真实 Electron GUI 自测（打开关闭、长文本、页签隔离、视图 bounds、重启恢复、原生 Composer 探针；不发真实消息） | 是 / 视服务而定 |
 | `PI_WEB_DESKTOP_DEBUG_COMPAT=1 npm run app` | 在 `server.log` 打印全部兼容性结论 | 是 / 视服务而定 |
 | `docs/TESTING.md` | 人工自测清单（页签 / 分屏 / 托盘 / 通知 / 主题 / 崩溃 / 异常路径） | 是 / 视服务而定 |
 
@@ -284,9 +304,9 @@ npm run app            # 再按下面 7 条人工过一遍
 
 | # | 项目 | 状态 | 属于 |
 | --- | --- | --- | --- |
-| 1 | GUI 人工回归（页签 / 分屏 / 托盘 / 通知 / 主题 / 崩溃 / 更新） | **未执行**，需在真机按 `docs/TESTING.md` 过一遍，尤其是新增的 G~K 条 | 验收 |
+| 1 | GUI 人工回归（页签 / 分屏 / 托盘 / 通知 / 主题 / 崩溃 / 更新 / 独立输入工作区） | 独立输入工作区已有自动化 GUI 自测（`PI_WEB_DESKTOP_SELFTEST_DRAFT=1`，含不兼容模拟）；其余仍需真机按 `docs/TESTING.md` 过一遍（G~M 条） | 验收 |
 | 2 | 「未知 pi-web 版本 → 显示未验证提示」 | 只写 `server.log` 的 `[compat] … unverified`，**没有 UI 提示** | Plan 3.3 |
-| 3 | §3 升级回归清单的**实际执行结果** | 文档只有清单，没有「当前版本 / 新版本对比后的 7 条结论」记录 | Plan 3.4 |
+| 3 | §3 升级回归清单的**实际执行结果** | 文档只有清单（现 8 条），没有「当前版本 / 新版本对比后的 8 条结论」记录 | Plan 3.4 |
 | 4 | `TabLayout` 模块抽取 | `layout()` / `paneRects()` / `setVisible` 仍在 `tab-manager.ts` | Plan 5.1（渐进式，可选） |
 | 5 | 崩溃恢复「原会话是否可恢复」 | 只验证了服务存活（`isServing`），未验证 session id 在服务端仍有效 | Plan 8.2 |
 | 6 | 回滚「旧版本确实完整保留」 | 只验证 `resolveInstall().version`，未校验 `.next` 等文件完整性 | Plan 9 |
@@ -295,3 +315,9 @@ npm run app            # 再按下面 7 条人工过一遍
 | 9 | 分屏极端缩窗的窗格越界 | 已知限制，按「保留现有分屏算法」有意不改 | Plan 5.3 |
 
 前 3 项与第 5~7 项仍可继续实施；第 8、9 项是经确认保留的限制。
+
+Plan 01 已知边界（有意不做，MVP 范围）：不做富文本 / Markdown 编辑器、不做模板管理；
+草稿按「页签 + 会话」隔离，同一个会话在两个页签同时打开时，重启恢复只把那份草稿还原到
+其中一个页签（一对一匹配，避免同一草稿出现在两个页签）；发送成功判定依赖 pi-web
+「提交时清空 textarea / 失败时放回文本」这一行为，若上游改成别的行为，会走「未能确认已送达」
+分支并保留草稿（不会误清空）。

@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { ServerState, ShellApi, TabbarApi, TabsSnapshot } from "../shared/types";
+import type {
+  DraftApi,
+  DraftImageData,
+  DraftSendResult,
+  DraftSnapshot,
+  ServerState,
+  ShellApi,
+  TabbarApi,
+  TabsSnapshot,
+} from "../shared/types";
 
 // 注意：sandbox 模式下的 preload 不能 require 共享 chunk，
 // 所以这里内联通道名，必须与 src/shared/types.ts 里的 IPC / TAB_IPC 保持一致。
@@ -101,5 +110,42 @@ const api: TabbarApi = {
   },
 };
 
+// 独立输入工作区：同样内联通道名（sandbox 模式不能 require 共享 chunk），
+// 必须与 src/shared/types.ts 的 DRAFT_IPC 保持一致。
+const DRAFT_CH = {
+  get: "drafts:get",
+  setText: "drafts:set-text",
+  open: "drafts:open",
+  close: "drafts:close",
+  toggle: "drafts:toggle",
+  setWidth: "drafts:set-width",
+  addImages: "drafts:add-images",
+  removeImage: "drafts:remove-image",
+  getImage: "drafts:get-image",
+  openInNative: "drafts:open-in-native",
+  send: "drafts:send",
+  changedEvent: "drafts:changed",
+} as const;
+
+const draftApi: DraftApi = {
+  get: () => ipcRenderer.invoke(DRAFT_CH.get) as Promise<DraftSnapshot>,
+  setText: (text: string) => ipcRenderer.invoke(DRAFT_CH.setText, text) as Promise<void>,
+  open: () => ipcRenderer.invoke(DRAFT_CH.open) as Promise<void>,
+  close: () => ipcRenderer.invoke(DRAFT_CH.close) as Promise<void>,
+  toggle: () => ipcRenderer.invoke(DRAFT_CH.toggle) as Promise<void>,
+  setWidth: (px: number) => ipcRenderer.invoke(DRAFT_CH.setWidth, px) as Promise<void>,
+  addImages: (images) => ipcRenderer.invoke(DRAFT_CH.addImages, images) as Promise<void>,
+  removeImage: (id: string) => ipcRenderer.invoke(DRAFT_CH.removeImage, id) as Promise<void>,
+  getImage: (id: string) => ipcRenderer.invoke(DRAFT_CH.getImage, id) as Promise<DraftImageData | null>,
+  openInNative: () => ipcRenderer.invoke(DRAFT_CH.openInNative) as Promise<DraftSendResult>,
+  send: () => ipcRenderer.invoke(DRAFT_CH.send) as Promise<DraftSendResult>,
+  onChange: (cb) => {
+    const handler = (_event: unknown, snapshot: DraftSnapshot) => cb(snapshot);
+    ipcRenderer.on(DRAFT_CH.changedEvent, handler);
+    return () => ipcRenderer.off(DRAFT_CH.changedEvent, handler);
+  },
+};
+
 contextBridge.exposeInMainWorld("piWebTabs", api);
 contextBridge.exposeInMainWorld("piWebShell", shellApi);
+contextBridge.exposeInMainWorld("piWebDrafts", draftApi);

@@ -4,6 +4,7 @@
 
 - 自动启动本机 `pi-web` 服务，页面在**应用窗口内**打开，不再跳到浏览器
 - **页签**= 一个对话，支持固定、拖动排序、重启后自动恢复；后台对话**等待回答时页签名后转圈、回答完毕未查看时显示提示点**（样式与 pi-web 侧栏一致，橙色点 = 等你确认）
+- **独立输入工作区**（桌面增强）：右边开一个独立长文本编辑面板，边看对话边写草稿，不盖住聊天区；草稿按页签 + 会话隔离，发送完全复用 pi-web 原生输入框与发送按钮
 - **分屏**：像 VSCode 一样分 2/3/4 个展示区域，每个区域自带页签条、页签可拖到任意一侧；单栏时界面与原来完全一致；布局重启后自动恢复
 - 关窗口**最小化到托盘**，服务继续跑；手机/局域网可访问（带密码）
 - **完全不修改 pi-web**：`npm i -g @agegr/pi-web@latest` 升级后重启即生效
@@ -14,6 +15,7 @@
 
 - [现在怎么用](#现在怎么用)
 - [界面说明](#界面说明)
+- [独立输入工作区（桌面增强）](#独立输入工作区桌面增强)
 - [分屏（多窗格）](#分屏多窗格)
 - [快捷键](#快捷键)
 - [托盘与关闭行为](#托盘与关闭行为)
@@ -75,13 +77,18 @@ npm run app
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ [π] 对话A ×  [π] 对话B ×  +                      30141 · v0.15.0 │  ← 页签栏
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│                    pi-web 页面（每个页签独立）                 │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+│ [π] 对话A ×  [π] 对话B ×  +  ▣  ⌗                30141 · v0.17.0 │  ← 页签栏
+├───────────────────────────────────────────────┬──────────────┤
+│                                               │ 独立输入 ⌗  × │
+│             pi-web 页面（每个页签独立）       │              │
+│             对话区继续正常显示 / 滚动         │  长文本草稿   │
+│                                               │  独立滚动区   │
+│                                               │ 84000 字 发送 │
+└───────────────────────────────────────────────┴──────────────┘
+                                        ↑ 面板展开时右侧让出 380px
 ```
+
+（`⌗` 就是页签栏上的「独立输入工作区」按钮；收起后右侧宽度还给 pi-web 页面。）
 
 **页签是怎么工作的**（三个问题之一）
 
@@ -113,6 +120,28 @@ npm run app
   - 红 = 启动失败（点菜单「服务 → 状态」看原因）
 
 **服务自愈**：服务意外退出会自动重拉（最多 3 次/2 分钟）；如果之前是复用你终端里的实例、而那个实例被关掉了，应用会**自动接管**并自己拉起一个（同一端口），页签自动刷新，不需要重启应用。
+
+---
+
+## 独立输入工作区（桌面增强）
+
+写长提示词时不用挤在 pi-web 那个单行输入框里：点页签栏右侧的 `⌗`，右侧展开一个独立编辑面板。**唯一入口就是这个顶部按钮**，pi-web 页面里不注入任何可见按钮。
+
+- **不遮挡对话**：面板画在桌面壳自己的窗口渲染层，主进程把 pi-web 的 `WebContentsView` 收窄让出右侧空间（默认 380px，实测 `1440×860 → 1060×860`），对话区继续正常显示和滚动；面板自带独立滚动条。不改变页签栏、不改 pi-web 页面 DOM。
+- **宽度可拖**：拖动面板左边缘的分隔条即可调整（280–720px，且不超过窗口 60%），宽度存进 `drafts.json`，重启后保持。
+- **字体和原生输入框一致**：直接读 pi-web 原生 `textarea` 的 computed `font-family` / `font-size` / `line-height` / `color` 并应用，pi-web 以后换字体也不用改壳子。
+- **能力对齐原生 Composer**：
+  - Markdown 就是纯文本，直接写即可；`@文件路径` 也是文本，最终由原生 Composer 发出。
+  - **图片**：粘贴、拖入，或点底部与 pi-web 原生一致的「附加文件」SVG 图标；图片通过原生 `onPaste` 交给 pi-web 的附件逻辑，**点击附件 chip 可在右侧面板内打开图片预览**（只盖编辑区、不压暗对话，带文件名和 ×），也可逐张 × 移除（最多 10 张、单张 5MB）。
+  - **提交模式全自动**：底部只有 `发送到对话` 一个主按钮，**没有下拉、没有第二按钮**。主进程按 pi-web 当前按钮状态自动判定：空闲 → `发送`；Agent 运行中 → `发送引导`（只有 steer 不可用才 `排队后续消息`），与 pi-web 原生 Enter 键的分支一致；按钮文案 / title 自动跟着变，点的始终是 pi-web 自己的按钮。
+  - **在原生输入框中继续**：收进编辑器**右键菜单**（或 `Ctrl+Shift+Enter`），不占可见按钮位。把草稿（含图片）放进 pi-web 原生输入框并聚焦，就能用原生全部能力（`@` 文件补全、`/` 命令、模型、工具、Thinking）继续编辑和发送；成功后清空面板草稿。
+- **草稿隔离**：草稿 key = 页签 id + 会话身份（`?session=` / `?cwd=` / 新会话）。切页签、切会话都不会串用别人的草稿；收起面板不丢草稿。
+- **发送完全复用 pi-web 原生逻辑**：只把文本 + 图片交给 pi-web 自己的 `textarea`，再点它自己的提交按钮。**不调用 Agent API、不维护第二套发送状态机、不重复实现模型 / 工具 / Thinking**。发送前复核目标页签仍对应原会话，成功后清空草稿与附件，失败保留。
+- **快捷键**：`Ctrl/Cmd+Enter` 发送、`Ctrl+Shift+Enter` 转原生输入框、`Esc` 收起（草稿保留 / 关闭大图预览）。成功提示 4 秒后自动消失，失败原因保留，重新输入即清除。
+- **兼容性**：每次加载做只读探针；找不到主输入框 / 作用域不明 / 注入失败 → 面板标记为 `disabled` 并**禁止发送**，pi-web 原生输入框始终可用，原因写进 `server.log` 的 `[compat] composer: …` 和面板顶部提示。用 `PI_WEB_DESKTOP_DISABLE_DRAFT_WORKSPACE=1` 可整体关闭，关闭后页签栏按钮置灰、页面零注入。
+- **持久化**：草稿存在 `data/drafts.json`（复用项目已有的「版本化 JSON + `.tmp` + `renameSync`」机制，不新增数据库）。应用重启后按「路径 + 会话」一对一恢复；页签 id 每次启动都会变，所以不按 id 匹配。图片只存内存，不写进 JSON。
+
+> 历史上 `25d37d5` 移除过「大输入框」：那一版把面板塞进 pi-web 页面 DOM、依赖私有 `#file-panel`，上游一改就坏。这一版是不同设计——Electron 侧独立面板 + 页面 realm 里只跑只读探针 / 复用原生发送按钮，连 ⤢ 小按钮也不注入。
 
 ---
 
@@ -260,6 +289,7 @@ netsh advfirewall firewall add rule name="Pi Web Desktop" dir=in action=allow pr
 | `settings.json` | 设置（端口、关闭行为、局域网开关…） |
 | `tabs.json` | 页签（路径、标题、是否固定、激活索引） |
 | `theme.json` | 上次探测到的 pi-web 主题（名称 + CSS 变量），用于冷启动首帧配色；文件损坏/删除会自动重建 |
+| `drafts.json` | 独立输入工作区的长文本草稿（按页签 + 会话隔离，重启后恢复）；文件损坏会自动忽略坏条目 |
 | `secure.bin` | 局域网密码（系统凭据加密，非明文） |
 | `server.log` | 服务日志（超 2MB 自动轮转为 `server.1.log`） |
 
@@ -366,18 +396,19 @@ npm run shortcut   # 生成/修复快捷方式（维护开始菜单 AUMID 注册
 npm run dist       # 绿色版 exe（打包已暂停，脚本保留）
 ```
 
-`npm run check` 串行跑 1 个 `typecheck` + 13 项回归（不重复执行同一检查）：
+`npm run check` 串行跑 1 个 `typecheck` + 16 项回归（不重复执行同一检查）：
 `check:contracts` → `check:theme` → `check:status` → `check:status-model` →
 `check:status-manager` → `check:split` → `check:compat` → `check:notification` →
 `check:notification-bridge` → `check:theme-manager` → `check:lifecycle` →
-`check:tab-model` → `check:runtime-update`。它们都不启动 Electron、不联网；
+`check:tab-model` → `check:runtime-update` → `check:draft-model` →
+`check:composer-bridge` → `check:draft-workspace`。它们都不启动 Electron、不联网；
 `smoke` 会真正拉起一个临时 pi-web 服务，所以单独放在 `check:all` 里。
 纯逻辑模块用 Node 22 的 `--experimental-strip-types` 直接加载 TS，无需先构建。
 
-> 文档命令一致性：`check:theme` / `check:status` 曾只在 `package.json` 里、README 只列了前者，
-> 现已对齐。README 里没有 `check:composer`，`package.json` 里也没有 —— 扩展输入框增强
-> 已在提交 `25d37d5` 移除（`composer-expand.ts` / `check-composer-expand.mjs` 一并删除），
-> 当前版本没有输入框注入，pi-web 原生输入框始终可用。
+> 独立输入工作区的三项回归：`check:draft-model`（草稿隔离 / 连点去重 / 重启恢复纯逻辑）、
+> `check:composer-bridge`（注入脚本语法 + 「绝不自己发 API」安全契约 + 特殊字符 payload）、
+> `check:draft-workspace`（mock WebContents：成功清空 / 失败保留 / 不兼容禁止发送）。
+> 旧的 `check:composer-expand.mjs` 随 `25d37d5` 一起删除，没有恢复；新增强是独立设计、独立文件。
 
 目录速览：
 
@@ -388,6 +419,9 @@ src/renderer/       启动页、页签栏、设置页
 src/shared/types.ts 主进程与界面共享的类型与 IPC 通道名
 src/shared/split.ts 分屏常量 + computePaneRects()/paneContentRect()：主进程摆视图、界面算位置共用一份
 src/main/tabs/tab-manager.ts 页签与窗格分组（groups / focusedGroup / layout）
+src/main/tabs/draft-{model,persistence,workspace}.ts 独立输入工作区：草稿状态 / JSON 持久化 / 编排
+src/main/tabs/composer-bridge.ts 页面 realm 只读探针 / 复用原生发送按钮（不注入可见按钮）
+src/renderer/tabbar/draft-panel.ts 右侧面板 UI
 build/logo.svg      图标唯一真源（npm run icons 生成全部尺寸）
 scripts/            smoke.mjs（契约冒烟）、build-icons.mjs、create-shortcut.ps1（快捷方式/AUMID）
 docs/               ANALYSIS（方案分析）/ PLAN（计划）/ TESTING（自测清单）
@@ -408,7 +442,7 @@ npm run app
 桌面端不修改 pi-web 源码 / node_modules / 构建产物，`check:contracts` 会只读扫描上游
 `.next` 构建，发现契约破坏时把对应增强标记为「不兼容」，而不是静默失效。
 
-四个增强各自独立检测、独立降级（`PI_WEB_DESKTOP_DEBUG_COMPAT=1` 可在 `server.log`
+五个增强各自独立检测、独立降级（`PI_WEB_DESKTOP_DEBUG_COMPAT=1` 可在 `server.log`
 看到全部结论），也都能用环境变量单独关闭，关闭后 pi-web 原生功能不受影响：
 
 | 环境变量（=1 关闭） | 影响 |
@@ -416,6 +450,7 @@ npm run app
 | `PI_WEB_DESKTOP_DISABLE_STATUS_PROBE` | 关闭页签状态探测（转圈 / 橙点 / 蓝点） |
 | `PI_WEB_DESKTOP_DISABLE_THEME_PROBE` | 关闭主题跟随（用缓存 / 系统明暗） |
 | `PI_WEB_DESKTOP_DISABLE_NOTIFICATION_PATCH` | 关闭 Windows 通知增强（只在 Windows 生效） |
+| `PI_WEB_DESKTOP_DISABLE_DRAFT_WORKSPACE` | 关闭独立输入工作区（页签栏按钮置灰、页面零注入，pi-web 原生输入框不受影响） |
 
 主题同步现在以**事件驱动**为主：页面里的只读 observer 发现主题变化时通知主进程立刻读取，
 5s 低频轮询只作兜底；读不到 CSS 变量时保留当前主题缓存，不影响 pi-web 显示。
@@ -448,3 +483,4 @@ npm run app
 | M2 托盘 / 局域网 / 设置 / 菜单 / 开机自启 | ✅ |
 | M3 绿色版打包 | ⏸ 暂停（`npm run dist` 脚本保留） |
 | M4 自绘标题栏（跟随 pi-web 任意主题）| ✅ 已做（页签分组 / 多窗口 / 二维码仍可选） |
+| Plan 01 独立输入工作区（右侧草稿面板 / 页签+会话隔离 / 复用原生发送）| ✅ 已做 MVP（不做富文本、模板管理） |

@@ -36,6 +36,18 @@
             <path d="M8 3v10" stroke="currentColor" stroke-width="1.3" />
           </svg>
         </button>
+        <button
+          class="draft-toggle"
+          id="draft-toggle"
+          title="独立输入工作区（右侧编辑长文本）"
+          aria-label="独立输入工作区"
+          type="button"
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+            <rect x="2" y="2.5" width="12" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+            <path d="M5 6h6M5 9h6M5 12h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+          </svg>
+        </button>
         <button class="new-tab" id="new-tab" title="新页签 (Ctrl+T)" type="button">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
@@ -73,6 +85,62 @@
 
     <!-- 拖动页签时的投放区（内容视图已由主进程临时隐藏） -->
     <div class="drag-overlay" id="drag-overlay" hidden></div>
+
+    <!-- 桌面增强：独立输入工作区。它在 Electron 窗口自己的渲染层，
+         主进程给 pi-web 视图让出右侧宽度，所以不会盖住对话、不进 pi-web DOM。 -->
+    <section class="draft-panel" id="draft-panel" hidden aria-label="独立输入工作区">
+      <div class="draft-resizer" id="draft-resizer" title="拖动调整宽度"></div>
+      <header class="draft-header">
+        <span class="draft-title">独立输入</span>
+        <span class="draft-tab" id="draft-tab"></span>
+        <button
+          class="draft-close"
+          id="draft-close"
+          type="button"
+          title="收起（草稿保留）"
+          aria-label="收起独立输入工作区"
+        >×</button>
+      </header>
+      <div class="draft-compat" id="draft-compat" hidden></div>
+      <div class="draft-attachments" id="draft-attachments" hidden></div>
+      <textarea
+        id="draft-editor"
+        class="draft-editor"
+        spellcheck="false"
+        placeholder="在这里写长文本（支持 Markdown 文本、粘贴 / 拖入图片、@ 文件路径）… Ctrl+Enter 发送"
+      ></textarea>
+      <input id="draft-file" class="draft-file" type="file" accept="image/*" multiple hidden />
+      <footer class="draft-footer">
+        <!-- 图标 / 尺寸 / 配色与 pi-web 原生「附加文件」按钮一致 -->
+        <button class="draft-attach" id="draft-attach" type="button" title="附加文件" aria-label="附加文件">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+            stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+            <circle cx="8.5" cy="8.5" r="1.5"></circle>
+            <polyline points="21 15 16 10 5 21"></polyline>
+          </svg>
+        </button>
+        <span class="draft-count" id="draft-count">0 字</span>
+        <span class="draft-hint">Ctrl+Enter 发送 · Esc 收起</span>
+        <!-- 只有一个主按钮：提交模式由主进程按 pi-web 当前状态自动判定 -->
+        <button class="draft-send" id="draft-send" type="button">发送到对话</button>
+      </footer>
+      <div class="draft-result" id="draft-result" hidden></div>
+      <!-- 「在原生输入框中继续」收进编辑器右键菜单，不占可见按钮位 -->
+      <div class="draft-context" id="draft-context" hidden>
+        <button type="button" id="draft-context-native">在原生输入框中继续…</button>
+      </div>
+      <!-- 图片预览：只覆盖右侧编辑区，不压暗左侧对话 -->
+      <div class="draft-lightbox" id="draft-lightbox" hidden>
+        <div class="draft-lightbox-head">
+          <span id="draft-lightbox-name">图片预览</span>
+          <button class="draft-lightbox-close" id="draft-lightbox-close" type="button" aria-label="关闭预览">×</button>
+        </div>
+        <div class="draft-lightbox-body">
+          <img id="draft-lightbox-img" alt="图片预览" />
+        </div>
+      </div>
+    </section>
 
     <script type="module" src="./tabbar.ts"></script>
   </body>

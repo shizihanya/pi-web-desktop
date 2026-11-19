@@ -2,9 +2,9 @@ import { app, BrowserWindow, dialog, nativeTheme, shell } from "electron";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { trayIconPath, windowIconPath } from "./assets";
-import { IPC } from "../shared/types";
+import { DRAFT_IPC, IPC } from "../shared/types";
 import type { SplitPreset } from "../shared/split";
-import { registerIpc, registerTabIpc } from "./ipc";
+import { registerDraftIpc, registerIpc, registerTabIpc } from "./ipc";
 import { installAppMenu } from "./menu";
 import { REMOTE_ACCESS_KEY, readSecret } from "./secret-store";
 import { listLanAddresses } from "./server/network";
@@ -14,6 +14,8 @@ import { dataDir, loadSettings, logFilePath, type AppSettings } from "./settings
 import { SettingsService } from "./settings-service";
 import { openSettingsWindow } from "./settings-window";
 import { TabManager } from "./tabs/tab-manager";
+import { DraftWorkspace, type DraftContents } from "./tabs/draft-workspace";
+import { COMPOSER_DIAGNOSE_SCRIPT, COMPOSER_PROBE_SCRIPT } from "./tabs/composer-bridge";
 import { loadTheme } from "./tabs/theme-persistence";
 import { AppTray } from "./tray";
 import { removeAutoShortcuts, watchAutoShortcuts } from "./start-menu";
@@ -48,6 +50,8 @@ let mainWindow: BrowserWindow | null = null;
 let mainWindowActivated = false;
 let manager: ServerManager | null = null;
 let tabs: TabManager | null = null;
+/** 桌面增强：独立输入工作区（与 TabManager 解耦，服务重启重建页签时保留草稿） */
+let draftWorkspace: DraftWorkspace | null = null;
 let tray: AppTray | null = null;
 let settingsService: SettingsService | null = null;
 let bootsOnce = false;
@@ -101,6 +105,29 @@ async function boot(): Promise<void> {
     openSettingsWindow(mainWindow);
   });
   settingsService.registerIpc();
+
+  // 独立输入工作区：只用 provider 访问 TabManager，服务重启重建页签不会丢草稿。
+  draftWorkspace = new DraftWorkspace({
+    enabled: process.env.PI_WEB_DESKTOP_DISABLE_DRAFT_WORKSPACE !== "1",
+    dataDir: dataDir(),
+    tabs: {
+      activeTabId: () => tabs?.snapshot().activeId ?? null,
+      tabContext: (id) => tabs?.draftContext(id) ?? null,
+      allContexts: () => tabs?.allDraftContexts() ?? [],
+      contents: (id) => (tabs?.draftContents(id) ?? null) as DraftContents | null,
+      setReservedRightWidth: (px) => tabs?.setReservedRightWidth(px),
+      windowWidth: () =>
+        mainWindow && !mainWindow.isDestroyed() ? mainWindow.getContentSize()[0] : 1_440,
+    },
+    onChange: (snapshot) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(DRAFT_IPC.changedEvent, snapshot);
+      }
+    },
+    onCompat: (verdict) => tabs?.setComposerCompat(verdict),
+    onDebug: (message) => manager?.log(message),
+  });
+  registerDraftIpc(() => draftWorkspace);
 
   tray = new AppTray({
     getState: () => manager?.getState() ?? IDLE_STATE,
@@ -319,6 +346,7 @@ function ensureMainWindow(): BrowserWindow {
     }
   });
   win.on("closed", () => {
+    draftWorkspace?.detachAll();
     tabs?.destroy();
     tabs = null;
     mainWindow = null;
@@ -332,6 +360,7 @@ function ensureMainWindow(): BrowserWindow {
 function showBootPage(): void {
   const win = ensureMainWindow();
   if (mainWindowActivated) {
+    draftWorkspace?.detachAll();
     tabs?.destroy();
     tabs = null;
     mainWindowActivated = false;
@@ -369,6 +398,9 @@ async function showMainWindow(baseUrl: string): Promise<void> {
     }
     // 端口/地址变了（重启服务、接管外部实例后换端口）：只重建页签，窗口本身不换
     manager?.log(`[ui] 服务地址变化 → ${baseUrl}，重建页签`);
+    // 旧 WebContents 的增强监听在这里清；onTabsReplaced() 不再 detach，
+    // 否则会把新 TabManager.init() 刚注册的 dom-ready 监听一起摘掉（只读探针无法重装）
+    draftWorkspace?.detachAll();
     tabs?.destroy();
     tabs = null;
     mainWindowActivated = false;
@@ -389,11 +421,17 @@ async function showMainWindow(baseUrl: string): Promise<void> {
     onDebug: (message) => manager?.log(message),
     customTitleBar: customTitleBarEnabled(),
     initialTheme: cachedTheme,
+    onTabCreated: (_tabId, wc) => draftWorkspace?.attach(wc as unknown as DraftContents),
+    onTabClosed: (tabId) => draftWorkspace?.onTabClosed(tabId),
+    onTabContextChanged: () => draftWorkspace?.refreshContext(),
   });
 
   // 先让页签视图开始加载 pi-web，再把窗口自身的页面从启动页换成页签栏：
   // 同一个窗口、同一个任务栏图标，只是内容原地切换
   await tabs.init();
+  // 页签 id 每次启动都会变：把 drafts.json 里的草稿按 path + sessionKey 一对一恢复
+  draftWorkspace?.onTabsReplaced();
+  draftWorkspace?.hydrate(tabs.allDraftContexts());
   loadPage(win, "tabbar");
   mainWindowActivated = true;
   if (!startHidden || mainWindowShownOnce) {
@@ -452,6 +490,11 @@ async function showMainWindow(baseUrl: string): Promise<void> {
   }
 
   if (process.env.PI_WEB_DESKTOP_SELFTEST) runSelftest();
+
+  // 真实 GUI 自测：PI_WEB_DESKTOP_SELFTEST_DRAFT=1 PI_WEB_DESKTOP_DRAFT_SHOT=.pi/draft.png npm run app
+  // 只做只读探针 + 面板/草稿操作，绝不真的向 Agent 发消息。
+  if (process.env.PI_WEB_DESKTOP_SELFTEST_DRAFT) runDraftSelftest();
+  if (process.env.PI_WEB_DESKTOP_DIAG_COMPOSER) runComposerDiagnose();
 
   // 验收用：启动后自动切到某种分屏布局并截图，例如
   // PI_WEB_DESKTOP_SELFTEST_SPLIT=grid-2x2 PI_WEB_DESKTOP_SPLIT_SHOT=.pi/split.png npm run app
@@ -655,6 +698,315 @@ async function showAbout(): Promise<void> {
 }
 
 /* --------------------------- 调试/验证 --------------------------- */
+
+/** 升级上游后 dump 真实 Composer DOM：字体变量 / 全部按钮，写进 server.log */
+function runComposerDiagnose(): void {
+  setTimeout(() => {
+    const wc = tabs?.activeContents();
+    if (!wc || wc.isDestroyed()) return;
+    void wc
+      .executeJavaScript(COMPOSER_DIAGNOSE_SCRIPT, true)
+      .then((raw) => manager?.log(`[diag-composer] ${String(raw)}`))
+      .catch((error: unknown) => manager?.log(`[diag-composer] 失败：${String(error)}`));
+  }, 6_000);
+}
+
+/**
+ * 独立输入工作区的真实 GUI 自测（不启动对话、不向 Agent 发任何消息）。
+ * 覆盖：打开/关闭、大量文本、页签隔离、收起后保留、兼容性只读探针、原生输入框仍在。
+ * 发送成功/失败/连点去重/会话切换隔离由 check:draft-workspace 的 mock 回归覆盖，
+ * 避免自测把真实消息发进用户会话。
+ */
+function runDraftSelftest(): void {
+  setTimeout(async () => {
+    const ws = draftWorkspace;
+    const mgr = tabs;
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    if (!ws || !mgr) {
+      manager?.log("[selftest-draft] 工作区或页签管理器未就绪");
+      return;
+    }
+    const results: string[] = [];
+    const firstId = mgr.snapshot().activeId;
+    results.push(`firstTab=${firstId ? "yes" : "no"}`);
+
+    // 面板收起时先量一次 pi-web 视图 bounds，展开后再量一次：
+    // 宽度变小证明对话区是被「让出空间」而不是被面板盖住。
+    const sizeOf = (): string => {
+      const bounds = mgr.activeViewBounds();
+      return bounds ? `${bounds.width}x${bounds.height}@x${bounds.x}` : "none";
+    };
+    results.push(`viewClosed=${sizeOf()}`);
+
+    ws.open();
+    await wait(250);
+    results.push(`open=${ws.snapshot().open}`);
+
+    const big = "独立输入工作区长文本回归 ABCDEFG ".repeat(4_000);
+    ws.setText(big);
+    results.push(`largeText=${ws.snapshot().text.length}`);
+
+    const secondId = mgr.createTab("/", { activate: true });
+    await wait(400);
+    results.push(`tabIsolation=${ws.snapshot().text.length === 0}`);
+    ws.setText("B 页签自己的草稿");
+
+    if (firstId) {
+      mgr.activate(firstId);
+      await wait(400);
+    }
+    results.push(`backToA=${ws.snapshot().text === big}`);
+
+    ws.close();
+    await wait(150);
+    ws.open();
+    await wait(150);
+    results.push(`closeKeepsDraft=${ws.snapshot().text === big}`);
+    results.push(`secondTabIsolated=${secondId ? mgr.draftContext(secondId) !== null : false}`);
+    results.push(`compat=${ws.snapshot().compat.level}`);
+
+    const activeId = mgr.snapshot().activeId;
+    const wc = activeId ? mgr.draftContents(activeId) : null;
+    if (wc && !wc.isDestroyed()) {
+      try {
+        const raw = await wc.executeJavaScript(COMPOSER_PROBE_SCRIPT, true);
+        const probe = JSON.parse(String(raw)) as { textarea?: boolean; sendButton?: boolean };
+        results.push(`nativeComposer=${Boolean(probe.textarea)} sendButton=${Boolean(probe.sendButton)}`);
+      } catch (error) {
+        results.push(`nativeComposer=error:${String(error)}`);
+      }
+    }
+    results.push(`viewOpen=${sizeOf()}`);
+
+    /* ---- 真实 GUI 前置验证：不点击任何提交按钮、不发消息，最后还原原生输入框 ---- */
+    if (wc && !wc.isDestroyed()) {
+      const preflight =
+        "(() => { var shell = document.querySelector('.chat-input-shell');" +
+        " var ta = document.querySelector('.chat-input-shell textarea.chat-input-textarea');" +
+        " if (!shell || !ta) return JSON.stringify({ ok: false, reason: 'no textarea' });" +
+        " function sendButton(){ var list = shell.querySelectorAll('button');" +
+        " for (var i=0;i<list.length;i++){ var a=(list[i].getAttribute('aria-label')||'').trim();" +
+        " if (a==='发送'||a==='傳送'||a==='Send') return list[i]; } return null; }" +
+        " var b0 = sendButton(); if (!b0) return JSON.stringify({ ok:false, reason:'no send button' });" +
+        " var before = b0.disabled, original = ta.value || '';" +
+        " var setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;" +
+        " setter.call(ta, '独立输入工作区发送前置验证（不提交）');" +
+        " ta.dispatchEvent(new Event('input', { bubbles: true }));" +
+        " return new Promise(function(resolve){ setTimeout(function(){" +
+        " var b1 = sendButton(), after = b1 ? b1.disabled : null;" +
+        " setter.call(ta, original); ta.dispatchEvent(new Event('input', { bubbles: true }));" +
+        " resolve(JSON.stringify({ before: before, after: after," +
+        " enabledByInput: before === true && after === false," +
+        " injectedEntry: !!document.getElementById('pi-desktop-draft-entry') ||" +
+        " !!window.__piDesktopDraftEntry }));" +
+        " }, 240); }); })()";
+      try {
+        const pre = JSON.parse(String(await wc.executeJavaScript(preflight, true))) as {
+          before?: boolean;
+          after?: boolean;
+          enabledByInput?: boolean;
+          injectedEntry?: boolean;
+          reason?: string;
+        };
+        results.push(`sendPreflight=${pre.enabledByInput === true} (disabled ${String(pre.before)}→${String(pre.after)})`);
+        results.push(`noInjectedEntry=${pre.injectedEntry === false}`);
+      } catch (error) {
+        results.push(`sendPreflight=error:${String(error)}`);
+      }
+    }
+
+    // 字体一致性：面板读的是原生 textarea 的 computed style，这里两边对比
+    if (mainWindow && !mainWindow.isDestroyed()) try {
+      const panelFont = JSON.parse(
+        String(
+          await mainWindow.webContents.executeJavaScript(
+            "(() => { var e = document.getElementById('draft-editor'); if (!e) return 'null';" +
+              " var s = getComputedStyle(e); return JSON.stringify({ family: s.fontFamily, size: s.fontSize, lineHeight: s.lineHeight }); })()",
+          ),
+        ),
+      ) as { family: string; size: string; lineHeight: string } | null;
+      const nativeFont = JSON.parse(String(await (wc as NonNullable<typeof wc>).executeJavaScript(
+        "(() => { var t = document.querySelector('textarea.chat-input-textarea'); if (!t) return 'null';" +
+          " var s = getComputedStyle(t); return JSON.stringify({ family: s.fontFamily, size: s.fontSize, lineHeight: s.lineHeight }); })()",
+      ))) as { family: string; size: string; lineHeight: string } | null;
+      results.push(
+        `fontMatch=${Boolean(panelFont && nativeFont && panelFont.family === nativeFont.family && panelFont.size === nativeFont.size && panelFont.lineHeight === nativeFont.lineHeight)}`,
+      );
+    } catch (error) {
+      results.push(`fontMatch=error:${String(error)}`);
+    }
+
+    // 拖动宽度：520px 应让 pi-web 视图变成 1440-520=920
+    ws.setWidth(520);
+    await wait(150);
+    results.push(`resized=${sizeOf()}`);
+    ws.setWidth(380);
+
+    // 可选：临时把主输入框的 class 摘掉，模拟「pi-web Composer DOM 变化」。
+    // 只改一个 class、随后立即恢复，验证「禁止错误发送」且原生输入框依旧可用。
+    if (process.env.PI_WEB_DESKTOP_SELFTEST_DRAFT_INCOMPAT && wc && !wc.isDestroyed() && secondId) {
+      // React 每次重渲染都会把 className 写回来，所以要用 MutationObserver 持续摘掉，
+      // 才能稳定模拟「上游改了选择器」；测试结束 disconnect 并恢复，原生输入框自始至终可用。
+      const breakScript =
+        "(() => { var ta = document.querySelector('.chat-input-shell textarea.chat-input-textarea');" +
+        " if (!ta) return 'none'; window.__piDesktopDraftBroken = ta;" +
+        " var strip = function(){ var list = document.querySelectorAll('textarea.chat-input-textarea');" +
+        " for (var i=0;i<list.length;i++) list[i].classList.remove('chat-input-textarea'); };" +
+        // 观察整个 body 子树：React 可能直接替换 textarea 节点，只观察旧节点会漏
+        " var mo = new MutationObserver(strip);" +
+        " mo.observe(document.body, { childList:true, subtree:true, attributes:true, attributeFilter:['class'] });" +
+        " window.__piDesktopDraftBreakObserver = mo;" +
+        " strip(); return 'broken'; })()";
+      const restoreScript =
+        "(() => { if (window.__piDesktopDraftBreakObserver) {" +
+        " window.__piDesktopDraftBreakObserver.disconnect(); delete window.__piDesktopDraftBreakObserver; }" +
+        " var shell = document.querySelector('.chat-input-shell');" +
+        " var list = shell ? shell.querySelectorAll('textarea') : [];" +
+        " for (var i=0;i<list.length;i++) list[i].classList.add('chat-input-textarea');" +
+        " delete window.__piDesktopDraftBroken; return 'restored'; })()";
+      const nativeScript =
+        "(() => { var ta = document.querySelector('.chat-input-shell textarea');" +
+        " return JSON.stringify({ exists: !!ta, disabled: ta ? ta.disabled : true }); })()";
+      try {
+        results.push(`simulate=${await wc.executeJavaScript(breakScript, true)}`);
+        mgr.activate(secondId);
+        await wait(200);
+        if (firstId) mgr.activate(firstId);
+        await wait(2_200); // 探针会短轮询 1.8s 才下「不兼容」结论
+        results.push(`incompat=${ws.snapshot().compat.level}`);
+        const native = JSON.parse(String(await wc.executeJavaScript(nativeScript, true))) as {
+          exists: boolean;
+          disabled: boolean;
+        };
+        results.push(`nativeStillUsable=${native.exists && !native.disabled}`);
+        const beforeCalls = ws.snapshot().text.length;
+        // 只有确认已降级为 disabled 才敢点发送：否则会把真实消息发进会话
+        if (ws.snapshot().compat.level === "disabled") {
+          const blocked = await ws.send();
+          results.push(`blockedSend=${!blocked.ok} draftKept=${ws.snapshot().text.length === beforeCalls}`);
+        } else {
+          results.push("blockedSend=skipped(未降级)");
+        }
+      } catch (error) {
+        results.push(`incompatTest=error:${String(error)}`);
+      } finally {
+        try { await wc.executeJavaScript(restoreScript, true); } catch { /* 页面可能已销毁 */ }
+        if (secondId) mgr.activate(secondId);
+        await wait(200);
+        if (firstId) mgr.activate(firstId);
+        await wait(400);
+        results.push(`restored=${ws.snapshot().compat.level}`);
+      }
+    }
+
+    manager?.log(`[selftest-draft] ${results.join(" ")}`);
+
+    const shot = process.env.PI_WEB_DESKTOP_DRAFT_SHOT;
+    if (shot && mainWindow && !mainWindow.isDestroyed()) {
+      const image = await mainWindow.capturePage();
+      writeFileSync(shot, image.toPNG());
+      manager?.log(`[shot] 已保存独立输入工作区截图：${shot}`);
+    }
+
+    /* ---- UI 收敛验证：单提交按钮 / 原生图标 / 图片预览 / 提示自动消失 ---- */
+    const ui: string[] = [];
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      const structure = JSON.parse(
+        String(
+          await mainWindow.webContents.executeJavaScript(
+            "(() => { var q=function(id){return document.getElementById(id)};" +
+              " var a=q('draft-attach'), s=q('draft-send'), c=q('draft-context');" +
+              " return JSON.stringify({ noModebar: !q('draft-modes'), noNativeButton: !q('draft-native')," +
+              " noMore: !q('draft-submit-more'), noMenu: !q('draft-menu'), hasSend: !!s," +
+              " hasContext: !!c, contextHidden: c?c.hidden:false," +
+              " sendText: s?s.textContent.trim():''," +
+              " attachSvg: !!(a&&a.querySelector('svg')), attachBorder: a?getComputedStyle(a).borderStyle:'' }); })()",
+          ),
+        ),
+      ) as {
+        noModebar: boolean; noNativeButton: boolean; noMore: boolean; noMenu: boolean;
+        hasSend: boolean; hasContext: boolean; contextHidden: boolean;
+        sendText: string; attachSvg: boolean; attachBorder: string;
+      };
+      ui.push(`singleSubmit=${structure.noModebar && structure.noNativeButton && structure.noMore && structure.noMenu && structure.hasSend}`);
+      ui.push(`nativeSvgIcon=${structure.attachSvg && structure.attachBorder === "none"} (${structure.attachBorder})`);
+      ui.push(`sendLabel=${structure.sendText}`);
+      ui.push(`autoModeIdle=${structure.sendText === "发送到对话"}`);
+      ui.push(`hiddenNativeEntry=${structure.hasContext && structure.contextHidden}`);
+
+      // 64x64 纯色 PNG：验证附件能取回数据、点开后图片确实有可见尺寸
+      const tiny =
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAADZSURBVHhe7dBBDcQAEMPAA1b+KI5LS2AIROtI/vgX//7P816mAJKXKIDkJQogeYkCSF6iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkmJt+iAKICnWpg+iAJJibfogCiAp1qYPogCSYm36IAogKdamD6IAkpcogOQlCiB5iQJIXqIAkpc4HuB5P+5DwPD5sak1AAAAAElFTkSuQmCC";
+      ws.addImages([{ data: tiny, mimeType: "image/png", name: "selftest.png" }]);
+      await wait(250);
+      const first = ws.snapshot().attachments[0];
+      ui.push(`imageStored=${Boolean(first && ws.getImage(first.id)?.data)}`);
+      const chipClicked = await mainWindow.webContents.executeJavaScript(
+        "(() => { var c=document.querySelector('.draft-attachment'); if(!c) return false; c.click(); return true; })()",
+      );
+      await wait(400);
+      const lightbox = JSON.parse(
+        String(
+          await mainWindow.webContents.executeJavaScript(
+            "(() => { var l=document.getElementById('draft-lightbox'), i=document.getElementById('draft-lightbox-img');" +
+              " return JSON.stringify({ open: !!l&&!l.hidden, src: i?(i.getAttribute('src')||'').slice(0,22):'' }); })()",
+          ),
+        ),
+      ) as { open: boolean; src: string };
+      const imgDiag = JSON.parse(
+        String(
+          await mainWindow.webContents.executeJavaScript(
+            "(() => { var i=document.getElementById('draft-lightbox-img'), l=document.getElementById('draft-lightbox');" +
+              " var s=getComputedStyle(i), r=i.getBoundingClientRect(), lr=l.getBoundingClientRect();" +
+              " return JSON.stringify({ complete:i.complete, nw:i.naturalWidth, nh:i.naturalHeight," +
+              " srcLen:(i.getAttribute('src')||'').length, display:s.display, opacity:s.opacity," +
+              " w:Math.round(r.width), h:Math.round(r.height), x:Math.round(r.left), y:Math.round(r.top)," +
+              " lx:Math.round(lr.left), ly:Math.round(lr.top), lw:Math.round(lr.width), lh:Math.round(lr.height)," +
+              " panelOverflow:getComputedStyle(document.getElementById('draft-panel')).overflow }); })()",
+          ),
+        ),
+      ) as Record<string, unknown>;
+      ui.push(
+        `imgVisible=${imgDiag.nw === 64 && imgDiag.nh === 64 && Number(imgDiag.w) > 0 && Number(imgDiag.h) > 0 && Number(imgDiag.lw) < 800} (nw=${String(imgDiag.nw)} w=${String(imgDiag.w)} lw=${String(imgDiag.lw)})`,
+      );
+      ui.push(`imagePreview=${Boolean(chipClicked) && lightbox.open && lightbox.src.startsWith("data:image/png")}`);
+      const previewShot = process.env.PI_WEB_DESKTOP_PREVIEW_SHOT;
+      if (previewShot && mainWindow && !mainWindow.isDestroyed()) {
+        const image = await mainWindow.capturePage();
+        writeFileSync(previewShot, image.toPNG());
+      }
+      await mainWindow.webContents.executeJavaScript("document.getElementById('draft-lightbox-close').click()");
+
+      // 「在原生输入框中继续」收进编辑器右键菜单，默认隐藏、不占可见按钮位
+      await mainWindow.webContents.executeJavaScript(
+        "document.getElementById('draft-editor').dispatchEvent(new MouseEvent('contextmenu'," +
+          "{ bubbles:true, cancelable:true, clientX:1200, clientY:300 }))",
+      );
+      await wait(150);
+      const ctx = JSON.parse(
+        String(
+          await mainWindow.webContents.executeJavaScript(
+            "(() => { var c=document.getElementById('draft-context');" +
+              " return JSON.stringify({ open: !c.hidden, items: c.querySelectorAll('button').length }); })()",
+          ),
+        ),
+      ) as { open: boolean; items: number };
+      ui.push(`contextNative=${ctx.open && ctx.items === 1}`);
+      await mainWindow.webContents.executeJavaScript("document.getElementById('draft-context').hidden = true");
+
+      // 成功提示 4 秒后自动消失（不点提交按钮，只搬内容到原生输入框）
+      const native = await ws.openInNative();
+      await wait(350);
+      const shown = await mainWindow.webContents.executeJavaScript("!document.getElementById('draft-result').hidden");
+      await wait(4_700);
+      const gone = await mainWindow.webContents.executeJavaScript("document.getElementById('draft-result').hidden");
+      ui.push(
+        `successHintAutoHide=${native.ok && Boolean(shown) && Boolean(gone)} (ok=${native.ok} shown=${String(shown)} gone=${String(gone)})`,
+      );
+    }
+    manager?.log(`[selftest-draft-ui] ${ui.join(" ")}`);
+  }, 4_000);
+}
 
 function runSelftest(): void {
   setTimeout(async () => {

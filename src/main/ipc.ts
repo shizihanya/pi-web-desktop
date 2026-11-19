@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell } from "electron";
-import { IPC, TAB_IPC } from "../shared/types";
+import { DRAFT_IPC, IPC, TAB_IPC } from "../shared/types";
+import type { DraftWorkspace } from "./tabs/draft-workspace";
 import type { SplitPreset } from "../shared/split";
 import type { ServerManager } from "./server/server-manager";
 import type { TabManager } from "./tabs/tab-manager";
@@ -47,6 +48,54 @@ export function registerIpc(context: IpcContext): void {
       if (!win.isDestroyed()) win.webContents.send(IPC.logEvent, line);
     }
   });
+}
+
+/**
+ * 独立输入工作区 IPC：面板渲染层 ↔ DraftWorkspace。
+ * 面板渲染层只拿到快照 / 发送结果，拿不到任何 WebContents 或 Node 能力。
+ */
+export function registerDraftIpc(provider: () => DraftWorkspace | null): void {
+  const withDrafts = <T>(fn: (workspace: DraftWorkspace) => T): T | null => {
+    const workspace = provider();
+    return workspace ? fn(workspace) : null;
+  };
+
+  ipcMain.handle(DRAFT_IPC.get, () => withDrafts((drafts) => drafts.snapshot()));
+  ipcMain.handle(DRAFT_IPC.setText, (_event, text: string) =>
+    withDrafts((drafts) => drafts.setText(typeof text === "string" ? text : "")),
+  );
+  ipcMain.handle(DRAFT_IPC.open, () => withDrafts((drafts) => drafts.open()));
+  ipcMain.handle(DRAFT_IPC.close, () => withDrafts((drafts) => drafts.close()));
+  ipcMain.handle(DRAFT_IPC.toggle, () => withDrafts((drafts) => drafts.toggle()));
+  ipcMain.handle(DRAFT_IPC.setWidth, (_event, px: number) =>
+    withDrafts((drafts) => drafts.setWidth(Number(px))),
+  );
+  ipcMain.handle(DRAFT_IPC.addImages, (_event, images: unknown) =>
+    withDrafts((drafts) =>
+      drafts.addImages(
+        (Array.isArray(images) ? images : []).filter(
+          (item): item is { data: string; mimeType: string; name: string } =>
+            Boolean(item) &&
+            typeof (item as { data?: unknown }).data === "string" &&
+            typeof (item as { mimeType?: unknown }).mimeType === "string",
+        ),
+      ),
+    ),
+  );
+  ipcMain.handle(DRAFT_IPC.removeImage, (_event, id: string) =>
+    withDrafts((drafts) => drafts.removeImage(String(id))),
+  );
+  ipcMain.handle(DRAFT_IPC.getImage, (_event, id: string) =>
+    withDrafts((drafts) => drafts.getImage(String(id))) ?? null,
+  );
+  ipcMain.handle(DRAFT_IPC.openInNative, (_event) =>
+    withDrafts((drafts) => drafts.openInNative()) ??
+    ({ ok: false, reason: "独立输入工作区尚未就绪" } as const),
+  );
+  ipcMain.handle(DRAFT_IPC.send, () =>
+    withDrafts((drafts) => drafts.send()) ??
+    ({ ok: false, reason: "独立输入工作区尚未就绪" } as const),
+  );
 }
 
 /**

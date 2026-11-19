@@ -10,6 +10,8 @@ import {
 } from "electron";
 import { randomUUID } from "node:crypto";
 import type { TabInfo, TabStatus, TabsSnapshot, ThemeSnapshot } from "../../shared/types";
+import { DRAFT_MAX_WIDTH, sessionKeyFromPath, type DraftContext } from "./draft-model";
+import type { CompatVerdict } from "./compat";
 import { TAB_IPC } from "../../shared/types";
 import {
   computePaneRects,
@@ -112,6 +114,11 @@ export interface TabManagerOptions {
   customTitleBar?: boolean;
   /** 上次缓存的主题；有它就能让冷启动首帧直接用正确配色 */
   initialTheme?: ThemeSnapshot | null;
+  /** 独立输入工作区（桌面增强）：新页签创建时把 WebContents 交给它装入口/探针 */
+  onTabCreated?: (tabId: string, wc: WebContents) => void;
+  onTabClosed?: (tabId: string) => void;
+  /** 页签切换 / 会话切换 / 分屏焦点变化；在 notify() 里触发，调用方自行去重 */
+  onTabContextChanged?: () => void;
 }
 
 /**
@@ -142,6 +149,8 @@ export class TabManager {
   private readonly demoStatus = process.env.PI_WEB_DESKTOP_SELFTEST_STATUS === "1";
   private lastChromeSignature = "";
   private destroyed = false;
+  /** 独立输入工作区展开时给 pi-web 内容视图让出的右侧宽度（不盖住对话） */
+  private reservedRightWidth = 0;
 
   /* ---------------- 功能级兼容性（每个增强独立检测/关闭/降级） ---------------- */
   private readonly compat: CompatibilityTracker;
@@ -236,6 +245,52 @@ export class TabManager {
 
   get baseUrl(): string {
     return this.options.baseUrl;
+  }
+
+  /** 展开 / 收起独立输入工作区：只调整内容视图 bounds，不改 pi-web DOM、不动页签栏 */
+  setReservedRightWidth(px: number): void {
+    const clamped = Math.max(0, Math.min(DRAFT_MAX_WIDTH, Math.round(px)));
+    if (clamped === this.reservedRightWidth) return;
+    this.reservedRightWidth = clamped;
+    this.layout();
+    this.notify();
+  }
+
+  /** 当前页签的草稿上下文（会话身份只从 URL 解析，不依赖 pi-web 内部状态） */
+  draftContext(tabId: string): DraftContext | null {
+    const tab = this.tabs.find((item) => item.id === tabId);
+    if (!tab) return null;
+    return {
+      tabId: tab.id,
+      title: tab.title,
+      path: tab.path,
+      sessionKey: sessionKeyFromPath(tab.path),
+    };
+  }
+
+  allDraftContexts(): DraftContext[] {
+    return this.tabs.map((tab) => ({
+      tabId: tab.id,
+      title: tab.title,
+      path: tab.path,
+      sessionKey: sessionKeyFromPath(tab.path),
+    }));
+  }
+
+  draftContents(tabId: string) {
+    const tab = this.tabs.find((item) => item.id === tabId);
+    return tab ? tab.view.webContents : null;
+  }
+
+  /** GUI 自测用：当前 pi-web 视图的实际 bounds，用来确认面板是「让出空间」而不是盖住对话 */
+  activeViewBounds(): { x: number; y: number; width: number; height: number } | null {
+    const tab = this.activeTab();
+    return tab ? tab.view.getBounds() : null;
+  }
+
+  /** 把独立输入工作区的兼容性结论接回现有的 CompatibilityTracker（复用 [compat] 日志） */
+  setComposerCompat(verdict: CompatVerdict): void {
+    this.compat.set("composer", verdict);
   }
 
   async init(): Promise<void> {
@@ -484,6 +539,9 @@ export class TabManager {
       );
       this.notify();
     });
+
+    // 独立输入工作区：在 loadURL 之前挂好 dom-ready / console-message 监听
+    this.options.onTabCreated?.(tab.id, wc);
 
     this.options.win.contentView.addChildView(view);
     view.setVisible(false);
@@ -933,6 +991,9 @@ export class TabManager {
   /* ----------------------------- 内部 ----------------------------- */
 
   private disposeTab(tab: Tab, index: number, options: { keepWindow?: boolean } = {}): void {
+    // destroy()/回到启动页会带 keepWindow:true 逐个销毁视图，那不是「用户关页签」，
+    // 绝不能清掉草稿，否则应用重启恢复就永远拿不到数据。
+    if (!options.keepWindow) this.options.onTabClosed?.(tab.id);
     this.tabs.splice(index, 1);
     tab.lifecycle = markDestroyed(tab.lifecycle);
     // 状态请求源被关闭：下一轮自动选别的页面；同时摘掉这个页面的通知监听
@@ -1179,13 +1240,18 @@ export class TabManager {
   private layout(): void {
     if (this.destroyed || this.dragging || this.options.win.isDestroyed()) return;
     const rects = this.paneRects();
+    const [windowWidth] = this.options.win.getContentSize();
     for (const tab of this.tabs) tab.view.setVisible(false);
     for (let i = 0; i < this.groups.length; i += 1) {
       const id = this.groups[i].activeId;
       if (!id) continue;
       const tab = this.tabs.find((item) => item.id === id);
       if (!tab) continue;
-      tab.view.setBounds(paneContentRect(rects[i]));
+      const content = paneContentRect(rects[i]);
+      // 面板展开时只收窄贴着右边缘的内容视图，绝不浮在对话上面；
+      // paneRects()/snapshot().split.rects 保持原样，页签条与 WCO 窗口控件不位移。
+      const available = Math.max(1, windowWidth - content.x - this.reservedRightWidth);
+      tab.view.setBounds({ ...content, width: Math.max(1, Math.min(content.width, available)) });
       tab.view.setVisible(true);
     }
   }
@@ -1317,6 +1383,8 @@ export class TabManager {
 
   private notify(): void {
     if (this.destroyed) return;
+    // 页签切换 / 会话切换 / 分屏焦点变化都会走到这里；工作区自己按签名去重
+    this.options.onTabContextChanged?.();
     const snapshot = this.snapshot();
     const win = this.options.win;
     if (!win.isDestroyed()) win.webContents.send(TAB_IPC.changedEvent, snapshot);

@@ -51,6 +51,27 @@
 | 28 | `Ctrl+Alt+←/→`，然后 `Ctrl+W` / `Ctrl+R` / `F12` | 焦点只在窗格间切换；这些键只作用于当前窗格 |
 | 29 | 分屏状态下重启应用 | `tabs.json` 里有 `split.groups`，重启后窗格数、布局、每组的页签和各自显示的页签都恢复 |
 | 30 | 分屏里让某个可见页签跑任务到完成 | 可见页签都算「已查看」，**不再亮未读点**；未显示的后台页签仍正常提示 |
+| 31 | 点页签栏 `⌗` | 右侧展开独立输入面板；**对话区仍然完整显示、能正常滚动**，面板自己有独立滚动条。DevTools 里看 pi-web 视图宽度应从全宽收窄 380px（不是被面板盖住） |
+| 32 | 在面板里粘贴 / 输入几万字的长文本，滚动、编辑 | 字数实时更新，独立滚动区正常，pi-web 对话区不受影响 |
+| 33 | 面板里写草稿 A → 切到另一个页签 → 再切回来 | 切走时草稿为空（不串用别的页签），切回来 A 还在 |
+| 34 | 在同一页签里换会话（侧栏点别的对话） | 面板显示的是新会话的空草稿，不会把旧会话草稿带过去；`?cwd=` 的新会话同理 |
+| 35 | 收起面板（× / `Esc`）再重新打开 | 草稿**不丢**；右侧宽度还给 pi-web 页面 |
+| 36 | 写一段草稿 → `Ctrl/Cmd+Enter` 或点「发送到对话」 | 通过 pi-web **原生输入框 + 原生发送按钮**发出；成功后草稿清空。DevTools Network 里不应出现壳子自己发的 `/api/agent/*` 请求 |
+| 37 | 断网 / 停掉服务后发送 | 发送失败，草稿**完整保留**，面板给失败原因 |
+| 38 | 快速连点「发送到对话」多次 | 只有第一次提交，后续点击被拦住（日志 `[draft] 发送被阻止：上一次发送尚未结束`），不会重复发消息 |
+| 39 | 用 `PI_WEB_DESKTOP_DISABLE_DRAFT_WORKSPACE=1` 启动 | 页签栏按钮置灰，页面零注入，pi-web 原生输入框照常收发消息 |
+| 40 | 面板展开时 `PI_WEB_DESKTOP_DEBUG_COMPAT=1` 启动 | `server.log` 有 `[compat] composer: compatible — …`；改成找不到输入框时应为 `disabled` 且明确写「禁止发送，原生输入框不受影响」 |
+| 41 | 应用退出（托盘 → 退出并停止服务）后重启 | `drafts.json` 里草稿仍在，重启后按「路径 + 会话」恢复到对应页签 |
+| 42 | 展开面板，对比面板字体与 pi-web 原生输入框 | 字体 / 字号 / 行高 / 颜色一致（探针直接读原生 computed style）；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 日志里 `fontMatch=true` |
+| 43 | 拖动面板左边缘分隔条 | 宽度在 280–720px（且不超过窗口 60%）之间变化，pi-web 视图同步收窄；`resized=920x860@x0` 表示拖到 520px 后视图宽度 1440-520；重启后宽度保持 |
+| 44 | 面板里粘贴 / 拖入图片，或点底部「附加文件」图标 | 图标 / 尺寸 / 配色与 pi-web 原生一致（无边框 SVG）；出现附件条目、可逐张 × 移除；发送时通过原生 `onPaste` 进入附件，不写进 `drafts.json` |
+| 45 | **点击附件 chip** | 在**右侧面板内**打开图片预览（只盖编辑区、不压暗左侧对话），图片按面板尺寸 contain 居中、带标题和 ×，点空白 / × / `Esc` 关闭；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 日志里 `imgVisible=true` |
+| 46 | 看底部提交区 | **只有一个** `发送到对话` 主按钮，没有 `▾` 下拉、没有模式按钮排、没有第二个「原生输入框」按钮（`singleSubmit=true`） |
+| 47 | 让 Agent 跑起来，再看主按钮 | 文案**自动**变成 `发送引导`（steer 不可用时 `排队后续消息`），跑完自动变回 `发送到对话`；无需任何手动选择，点的仍是 pi-web 自己的按钮。回归见 `check:draft-workspace` 的自动模式断言 |
+| 48 | 编辑器里右键，或按 `Ctrl+Shift+Enter` | 「在原生输入框中继续…」：草稿 + 图片进入 pi-web 原生输入框并聚焦，可用 `@` 文件补全 / `/` 命令 / 模型 / 工具继续编辑；面板草稿清空并收起（`contextNative=true`） |
+| 49 | 触发一次成功操作（如 48），等 4 秒 | 底部 `✓ …` 提示**自动消失**；失败原因保留；重新输入即清除（`successHintAutoHide=true`） |
+| 50 | 看 pi-web 发送按钮左边 | **不应有** `⤢` 小按钮：页面 realm 零可见注入，唯一入口是页签栏 `⌗`；`PI_WEB_DESKTOP_SELFTEST_DRAFT=1` 日志里 `noInjectedEntry=true` |
+| 51 | 原生输入框为空时点「发送到对话」 | **不应**再报「找不到可用的原生发送按钮」：先写文本让 React 启用按钮再点；日志 `sendPreflight=true (disabled true→false)` |
 
 ## 异常路径清单
 
@@ -69,6 +90,8 @@
 | I | 切 `mist` / `pine` 等主题，看 `server.log` 的 `[theme]` | 主题立即跟随（事件驱动），不再需要等 1s 轮询；5s 兜底轮询只在 observer 失效时起作用 |
 | J | 设置 → 检查 pi-web 更新，故意让 npm registry 不可用 | 报「无法读取最新版本」，服务仍在跑（没被停掉），终端里的 pi-web 仍可用 |
 | K | 更新成功但新版本启动失败 / npm 安装中途失败 | 设置页明确说明是否已把全局包恢复并验证到旧版本；未验证通过时给出手动 `npm i -g @agegr/pi-web@<旧版本>` 命令，不谎称「已回滚」 |
+| L | pi-web 升级后 Composer DOM 变了（或 `PI_WEB_DESKTOP_SELFTEST_DRAFT_INCOMPAT=1` 模拟） | 面板顶部显示 `disabled` + 原因，**发送按钮不可用**，草稿保留；pi-web 原生输入框仍能正常打字、发送 |
+| M | 手工把 `drafts.json` 改成非法 JSON / 超长单条 / 乱字段 | 忽略坏条目，不崩、不白屏；正常草稿仍可用 |
 
 ## 图标专项排查
 
@@ -104,6 +127,12 @@ $env:PI_WEB_DESKTOP_DEBUG_COMPAT = "1"         # 打印全部功能级兼容性�
 $env:PI_WEB_DESKTOP_DISABLE_STATUS_PROBE = "1" # 单独关闭页签状态探测（原生 pi-web 不受影响）
 $env:PI_WEB_DESKTOP_DISABLE_THEME_PROBE = "1"  # 单独关闭主题跟随
 $env:PI_WEB_DESKTOP_DISABLE_NOTIFICATION_PATCH = "1" # 单独关闭 Windows 通知增强
+$env:PI_WEB_DESKTOP_DISABLE_DRAFT_WORKSPACE = "1"  # 单独关闭独立输入工作区（原生 Composer 不受影响）
+$env:PI_WEB_DESKTOP_SELFTEST_DRAFT = "1"          # 独立输入工作区 GUI 自测（不发真实消息）
+$env:PI_WEB_DESKTOP_SELFTEST_DRAFT_INCOMPAT = "1" # 配合上面：模拟 Composer DOM 不兼容并验证降级
+$env:PI_WEB_DESKTOP_DRAFT_SHOT = ".pi/draft.png"   # 配合上面：保存面板截图
+$env:PI_WEB_DESKTOP_DIAG_COMPOSER = "1"             # 升级上游后 dump 真实 Composer 按钮/字体到 server.log
+$env:PI_WEB_DESKTOP_PREVIEW_SHOT = ".pi/preview.png" # 配合 SELFTEST_DRAFT：保存图片预览打开时的截图
 $env:PI_WEB_DESKTOP_SELFTEST_THEME = "1"       # 自动切主题，验证页签栏跟随
 $env:PI_WEB_DESKTOP_SELFTEST_THEME_NAME = "mist" # 配合上面，可指定 pine/sand/zenburn…
 $env:PI_WEB_DESKTOP_SHOT_DELAY_MS = "11000"    # 配合截图，延迟到指定毫秒再拍
@@ -113,7 +142,9 @@ $env:PI_WEB_DESKTOP_NATIVE_TITLEBAR = "1"      # 退回系统原生标题栏（�
 ## 升级 pi-web 后
 
 先跑 `npm run check:all`（不启动 GUI 的静态/纯逻辑回归 + 契约冒烟），
-再按 [上游兼容性清单](development/pi-web-compatibility.md) 的 7 条人工回归清单过一遍。
+再按 [上游兼容性清单](development/pi-web-compatibility.md) 的人工回归清单过一遍；
+独立输入工作区依赖的 Composer 选择器由 `check:contracts` / `check:composer-bridge` 只读守着，
+契约破坏时增强会降级为 `disabled` 并禁止发送，但 pi-web 原生输入框照常可用。
 重点：4 个页签同时打开时 `/api/agent/running` 每轮只应有 **1 个**请求；
 关掉作为状态源的页签后状态提示仍能更新；服务重启后状态能重新初始化；
 更新失败时确认全局包版本确实恢复到了更新前的版本（不能只看服务能启动）。

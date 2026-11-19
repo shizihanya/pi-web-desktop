@@ -6,6 +6,8 @@ import type {
   ThemeSnapshot,
 } from "../../shared/types";
 import { topRightPaneIndex, type PaneRect, type SplitSnapshot } from "../../shared/split";
+// 桌面增强：独立输入工作区面板（只往窗口自己的渲染层挂 UI，不改 pi-web 页面）
+import "./draft-panel";
 
 const tabsBox = document.getElementById("tabs") as HTMLDivElement;
 const tabbar = document.getElementById("tabbar") as HTMLDivElement;
