@@ -6,6 +6,7 @@ install.log
 *.log
 *.png
 !build/*.png
+!pic/*.png
 .DS_Store
 Thumbs.db
 .pi/
