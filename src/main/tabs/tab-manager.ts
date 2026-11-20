@@ -2,6 +2,7 @@ import {
   clipboard,
   Menu,
   nativeTheme,
+  screen,
   shell,
   WebContentsView,
   type BrowserWindow,
@@ -28,6 +29,7 @@ import {
   computeLayoutRects,
   createPane,
   findPane,
+  findSplit,
   fromPersistedTree,
   layoutKind,
   layoutSignature,
@@ -36,7 +38,9 @@ import {
   normalizeLayout,
   paneCount,
   presetToTree,
+  ratioFromPointer,
   removePane,
+  setRatio,
   splitPane,
   type LayoutNode,
   type LayoutResult,
@@ -158,6 +162,18 @@ export class TabManager {
   private computed: { signature: string; width: number; height: number; result: LayoutResult } | null = null;
   /** 拖动页签期间临时隐藏内容视图，让渲染层的投放层露出来 */
   private dragging = false;
+  /** 当前正在显示的内容视图：layout() 只切变化的那几个，避免拖动时反复隐藏/显示造成闪烁 */
+  private shownTabIds = new Set<string>();
+
+  /* ---------------- 分隔条拖动（M2） ----------------
+   * 不抢焦点、不重建视图、不写盘；主进程轮询屏幕坐标作为可靠输入源，
+   * renderer 的 Pointer Events 只负责开始 / 低延迟更新 / 结束信号。 */
+  private sashDragging = false;
+  private sashDragSplitId: string | null = null;
+  private sashTimer: NodeJS.Timeout | null = null;
+  private sashWatchdog: NodeJS.Timeout | null = null;
+  /** 最近一次采用的坐标时间戳：丢弃跨进程晚到的旧 pointermove，防止 ratio 回跳 */
+  private lastSashAt = 0;
 
   /** 窗格列表（DFS 顺序）：与 computeLayoutRects().panes 严格同序 */
   private get groups(): PaneGroup[] {
@@ -222,7 +238,11 @@ export class TabManager {
   private readonly statuses: TabStatusManager;
 
   private readonly onWindowFocus = (): void => this.syncWindowFocus(true);
-  private readonly onWindowBlur = (): void => this.syncWindowFocus(false);
+  private readonly onWindowBlur = (): void => {
+    this.syncWindowFocus(false);
+    // 窗口失焦时鼠标很可能已经在别处松开：结束拖动并落盘，避免 ratio 卡在拖动态
+    if (this.sashDragging) this.endSashDrag();
+  };
 
   constructor(private readonly options: TabManagerOptions) {
     this.compat = new CompatibilityTracker({
@@ -841,6 +861,7 @@ export class TabManager {
     if (this.destroyed) return;
     this.dragging = true;
     for (const tab of this.tabs) tab.view.setVisible(false);
+    this.shownTabIds.clear();
   }
 
   endTabDrag(): void {
@@ -848,6 +869,78 @@ export class TabManager {
     this.dragging = false;
     this.layout();
     this.focusActive();
+  }
+
+  /* ------------------------- 分隔条拖动（M2） ------------------------- */
+
+  /** 开始拖某个 SplitNode 的分隔条 */
+  beginSashDrag(splitId: string): void {
+    if (this.destroyed || !findSplit(this.root, splitId)) return;
+    this.stopSashTimers();
+    this.sashDragging = true;
+    this.sashDragSplitId = splitId;
+    this.lastSashAt = Date.now();
+    // WebContentsView 是原生子视图，指针移到内容区后 renderer 收不到鼠标事件。
+    // 主进程以屏幕坐标轮询作为可靠输入源（16ms ≈ 一帧），不隐藏 / 不重建任何视图。
+    this.sashTimer = setInterval(() => this.pollSashRatio(), 16);
+    this.sashTimer.unref?.();
+    // 渲染层崩溃 / 鼠标释放事件全部丢失时的最后兜底（30s，正常拖动不会触发）
+    this.sashWatchdog = setTimeout(() => this.endSashDrag(), 30_000);
+    this.sashWatchdog.unref?.();
+  }
+
+  /** renderer 的 pointermove（低延迟路径）；与主进程轮询结果一致，靠时间戳 + ratio 差量去重 */
+  setSashRatio(splitId: string, x: number, y: number, stamp: number): void {
+    if (this.destroyed || !this.sashDragging || splitId !== this.sashDragSplitId) return;
+    this.applySashRatio(splitId, x, y, stamp);
+  }
+
+  /** 轮询屏幕坐标：换算成窗口内容区坐标后交给同一份布局结果算 ratio */
+  private pollSashRatio(): void {
+    if (!this.sashDragging || !this.sashDragSplitId || this.options.win.isDestroyed()) return;
+    try {
+      const stamp = Date.now();
+      const point = screen.getCursorScreenPoint();
+      const bounds = this.options.win.getContentBounds();
+      this.applySashRatio(this.sashDragSplitId, point.x - bounds.x, point.y - bounds.y, stamp);
+    } catch {
+      // 个别平台不支持 getCursorScreenPoint：退化成只由 renderer 的 pointermove 驱动
+    }
+  }
+
+  /** 只改 ratio + bounds：不动可见性集合、不 focus、不写盘 */
+  private applySashRatio(splitId: string, x: number, y: number, stamp: number): void {
+    // 比主进程轮询更旧的 IPC 直接丢弃（2ms 容忍度覆盖跨进程时钟误差）
+    if (stamp < this.lastSashAt - 2) return;
+    const [width, height] = this.options.win.isDestroyed() ? [1, 1] : this.options.win.getContentSize();
+    const ratio = ratioFromPointer(this.root, splitId, { x: 0, y: 0, width, height }, x, y);
+    if (ratio === null) return;
+    const current = findSplit(this.root, splitId)?.ratio;
+    if (current !== undefined && Math.abs(current - ratio) < 0.0005) {
+      this.lastSashAt = Math.max(this.lastSashAt, stamp);
+      return;
+    }
+    this.lastSashAt = Math.max(this.lastSashAt, stamp);
+    this.root = setRatio(this.root, splitId, ratio).root;
+    this.layout();
+    this.notify();
+  }
+
+  /** 松开 / 取消：停轮询、退出拖动态、一次性落盘最终比例 */
+  endSashDrag(): void {
+    if (!this.sashDragging) return;
+    this.sashDragging = false;
+    this.sashDragSplitId = null;
+    this.stopSashTimers();
+    this.notify(); // 把最终比例推给渲染层（顺带排一次 debounce 保存）
+    this.persist(); // 立即落盘，并清掉上面的 debounce，全程只写一次
+  }
+
+  private stopSashTimers(): void {
+    if (this.sashTimer) clearInterval(this.sashTimer);
+    this.sashTimer = null;
+    if (this.sashWatchdog) clearTimeout(this.sashWatchdog);
+    this.sashWatchdog = null;
   }
 
   /** 页签栏右侧「分屏」按钮的下拉菜单 */
@@ -1023,6 +1116,8 @@ export class TabManager {
       }
     }
     this.themes.stop();
+    if (this.sashDragging) this.endSashDrag();
+    this.stopSashTimers();
     if (this.statusTimer) clearInterval(this.statusTimer);
     this.statusTimer = null;
     this.notifications.dispose();
@@ -1262,19 +1357,26 @@ export class TabManager {
     if (this.destroyed || this.dragging || this.options.win.isDestroyed()) return;
     const layout = this.syncLayout();
     const [windowWidth] = this.options.win.getContentSize();
-    for (const tab of this.tabs) tab.view.setVisible(false);
+    const nextVisible = new Set<string>();
     for (const { id: paneId, rect } of layout.panes) {
       const activeId = findPane(this.root, paneId)?.activeId;
       if (!activeId) continue;
       const tab = this.tabs.find((item) => item.id === activeId);
       if (!tab) continue;
+      nextVisible.add(activeId);
       const content = paneContentRect(rect);
       // 面板展开时只收窄贴着右边缘的内容视图，绝不浮在对话上面；
       // split.rects 保持原样，页签条与 WCO 窗口控件不位移。
       const available = Math.max(1, windowWidth - content.x - this.reservedRightWidth);
       tab.view.setBounds({ ...content, width: Math.max(1, Math.min(content.width, available)) });
-      tab.view.setVisible(true);
     }
+    // 只切真正变化的可见性：分隔条拖动时 active 集合不变 → 零次 setVisible，页面不闪
+    for (const tab of this.tabs) {
+      const was = this.shownTabIds.has(tab.id);
+      const should = nextVisible.has(tab.id);
+      if (was !== should) tab.view.setVisible(should);
+    }
+    this.shownTabIds = nextVisible;
   }
 
   private refreshPath(tab: Tab): void {
@@ -1404,8 +1506,9 @@ export class TabManager {
 
   private notify(): void {
     if (this.destroyed) return;
-    // 页签切换 / 会话切换 / 分屏焦点变化都会走到这里；工作区自己按签名去重
-    this.options.onTabContextChanged?.();
+    // 页签切换 / 会话切换 / 分屏焦点变化都会走到这里；工作区自己按签名去重。
+    // 分隔条拖动只改尺寸，不该让草稿面板 / 输入状态跟着刷新。
+    if (!this.sashDragging) this.options.onTabContextChanged?.();
     const snapshot = this.snapshot();
     const win = this.options.win;
     if (!win.isDestroyed()) win.webContents.send(TAB_IPC.changedEvent, snapshot);
@@ -1417,22 +1520,30 @@ export class TabManager {
   }
 
   private scheduleSave(): void {
+    if (this.sashDragging) return; // 拖动期间绝不写盘
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
-      saveTabs(
-        this.options.dataDir,
-        toPersistedTabs({
-          tabs: this.tabs,
-          activeId: this.activeId,
-          groups: this.groups,
-          focused: this.focusedGroup,
-          layout: this.effectiveLayout(),
-          tree: this.root,
-          focusedPaneId: this.focusedPaneId,
-        }),
-      );
+      this.persist();
     }, SAVE_DEBOUNCE_MS);
+  }
+
+  /** 立即写一次 tabs.json（分隔条拖动结束时用，避免 debounce 期间退出丢比例） */
+  private persist(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = null;
+    saveTabs(
+      this.options.dataDir,
+      toPersistedTabs({
+        tabs: this.tabs,
+        activeId: this.activeId,
+        groups: this.groups,
+        focused: this.focusedGroup,
+        layout: this.effectiveLayout(),
+        tree: this.root,
+        focusedPaneId: this.focusedPaneId,
+      }),
+    );
   }
 
   /** 同源 → 绝对 URL；站外 → null（调用方交给系统浏览器） */
@@ -1476,6 +1587,11 @@ export class TabManager {
    */
   private attachShortcuts(wc: WebContents, tabId?: string): ShortcutHandler {
     const handler: ShortcutHandler = (event, input) => {
+      // 分隔条拖动：所有视图（含窗口自身）上的 mouseUp 都能可靠结束拖动
+      if (this.sashDragging && input.type === "mouseUp") {
+        this.endSashDrag();
+        return;
+      }
       if (input.type !== "keyDown") return;
       if (tabId) this.noteGroupFocus(tabId);
       const ctrl = input.control || input.meta;

@@ -465,6 +465,72 @@ body {
   flex: none;
 }
 
+/* ---------------- 分隔条：每个 SplitNode 一条（M2） ----------------
+   sash 正好落在窗格间隔里，那里没有 WebContentsView 覆盖，Pointer Events 可靠。
+   命中宽度 = SASH_GAP(8px)，视觉只画 2px 细线；hover / 拖动时才高亮。 */
+
+.sash-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.sash {
+  position: absolute;
+  pointer-events: auto;
+  background: transparent;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.sash[data-direction="horizontal"] { cursor: col-resize; }
+.sash[data-direction="vertical"] { cursor: row-resize; }
+
+.sash::after {
+  content: "";
+  position: absolute;
+  background: var(--border);
+  opacity: 0.7;
+  border-radius: 2px;
+  transition: background 0.12s ease, opacity 0.12s ease;
+  pointer-events: none;
+}
+
+.sash[data-direction="horizontal"]::after {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-1px);
+}
+
+.sash[data-direction="vertical"]::after {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-1px);
+}
+
+.sash:hover::after,
+.sash.is-dragging::after {
+  background: var(--accent);
+  opacity: 1;
+}
+
+/* 拖动中禁止文字选中，光标保持调整方向 */
+:root.sash-dragging,
+:root.sash-dragging * {
+  user-select: none !important;
+  cursor: col-resize;
+}
+:root.sash-dragging.sash-vertical,
+:root.sash-dragging.sash-vertical * {
+  cursor: row-resize;
+}
+
 /* ---------------- 拖动页签时的投放区 ---------------- */
 
 .drag-overlay {

@@ -24,7 +24,7 @@ export type SplitPreset = "single" | "columns-2" | "rows-2" | "columns-3" | "gri
 
 // 常量与新模型统一放在 split-model.ts，这里重导出保持既有 import 路径不变。
 export { MAX_PANES, PANE_GAP, TABBAR_HEIGHT } from "./split-model.ts";
-export { MIN_PANE_WIDTH, MIN_PANE_HEIGHT, SASH_HIT_SIZE, LAYOUT_SCHEMA_VERSION } from "./split-model.ts";
+export { MIN_PANE_WIDTH, MIN_PANE_HEIGHT, SASH_GAP, SASH_LINE, SASH_HIT_SIZE, LAYOUT_SCHEMA_VERSION } from "./split-model.ts";
 export type {
   LayoutNode,
   PaneNode,

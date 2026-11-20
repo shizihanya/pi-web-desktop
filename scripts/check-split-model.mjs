@@ -15,7 +15,10 @@ import {
   LAYOUT_SCHEMA_VERSION,
   MAX_PANES,
   PANE_GAP,
+  SASH_GAP,
+  SASH_LINE,
   MIN_PANE_WIDTH,
+  MIN_PANE_HEIGHT,
   addEdgePane,
   canSplit,
   clampRatioForBounds,
@@ -36,6 +39,7 @@ import {
   paneCount,
   presetToTree,
   pruneEmptyPanes,
+  ratioFromPointer,
   removePane,
   setRatio,
   splitPane,
@@ -97,27 +101,27 @@ const sortedIds = (ids) => [...ids].sort().join(",");
   check("splitPane 返回新树且不改动入参", result.changed && result.root !== root && paneCount(root) === 1);
   check("左右拆分后 2 个 Pane，id 稳定且不是下标", paneCount(result.root) === 2 && collectPanes(result.root)[0].id === root.id);
   eq(
-    "左右拆分：两个子区域等宽、中间扣掉 PANE_GAP",
+    "左右拆分：两个子区域等宽、中间扣掉 SASH_GAP",
     computeLayoutRects(result.root, bounds()).panes.map((p) => rect(p.rect)),
     [
-      [0, 0, 718, 900],
-      [722, 0, 718, 900],
+      [0, 0, 716, 900],
+      [724, 0, 716, 900],
     ],
   );
   const sashes = computeLayoutRects(result.root, bounds()).sashes;
   check("每个 SplitNode 恰好一条分隔条", sashes.length === 1 && sashes[0].id === collectSplits(result.root)[0].id);
-  eq("分隔条位置 / 尺寸", rect(sashes[0]).slice(0, 3).concat(sashes[0].height), [718, 0, PANE_GAP, 900]);
+  eq("分隔条位置 / 尺寸", rect(sashes[0]).slice(0, 3).concat(sashes[0].height), [716, 0, SASH_GAP, 900]);
   check("拆分后矩形合法、不重叠、不越界", validRects(result.root));
 }
 {
   const root = createPane(["a"], "a");
   const result = splitPane(root, root.id, "vertical");
   eq(
-    "上下拆分：两个子区域等高、中间扣掉 PANE_GAP",
+    "上下拆分：两个子区域等高、中间扣掉 SASH_GAP",
     computeLayoutRects(result.root, bounds()).panes.map((p) => rect(p.rect)),
     [
-      [0, 0, 1440, 448],
-      [0, 452, 1440, 448],
+      [0, 0, 1440, 446],
+      [0, 454, 1440, 446],
     ],
   );
   check("上下拆分 layoutKind = rows", layoutKind(result.root) === "rows");
@@ -141,9 +145,9 @@ const sortedIds = (ids) => [...ids].sort().join(",");
     "左一右二：左侧通栏，右侧上下两格",
     computeLayoutRects(nested.root, bounds()).panes.map((p) => rect(p.rect)),
     [
-      [0, 0, 718, 900],
-      [722, 0, 718, 448],
-      [722, 452, 718, 448],
+      [0, 0, 716, 900],
+      [724, 0, 716, 446],
+      [724, 454, 716, 446],
     ],
   );
   check("嵌套拆分：每个 SplitNode 独立一条分隔条", computeLayoutRects(nested.root, bounds()).sashes.length === 2);
@@ -185,7 +189,7 @@ const sortedIds = (ids) => [...ids].sort().join(",");
   check("比例计算结果仍不重叠 / 不越界", validRects(withInner.root));
 
   const clamped = clampRatioForBounds(changed.root, splitId, 0.01, bounds());
-  check("clampRatioForBounds 保证两侧都满足最小尺寸", clamped >= MIN_PANE_WIDTH / (1440 - PANE_GAP));
+  check("clampRatioForBounds 保证两侧都满足最小尺寸", clamped >= MIN_PANE_WIDTH / (1440 - SASH_GAP));
   check("非整数窗口尺寸下矩形仍有限 / 不重叠", validRects(nested, bounds(800.5, 600.25)));
   check("极小窗口不产生 NaN / 负面积", validRects(nested, bounds(1, 1)) === false || safeTiny(nested));
 
@@ -414,6 +418,84 @@ function safeTiny(root) {
   }
 }
 
+/* ------------------------- 分隔条拖动（M2 纯逻辑） ------------------------- */
+{
+  check("两个 gap 分离：旧公式 4px / 新布局 8px 命中区 / 视觉线 2px", PANE_GAP === 4 && SASH_GAP === 8 && SASH_LINE === 2);
+  const base = presetToTree("grid-2x2", ["a", "b", "c", "d"]);
+  const [rootSplit, topSplit, bottomSplit] = collectSplits(base);
+  check("四宫格 = 1 个根 + 2 个内层 SplitNode，各自可独立调比例", collectSplits(base).length === 3 && rootSplit.direction === "vertical" && topSplit.direction === "horizontal");
+  const b = bounds();
+
+  // 主进程按同一份布局结果换算 ratio：vertical 用 y，horizontal 用 x
+  const rRoot = ratioFromPointer(base, rootSplit.id, b, 700, 300);
+  check("ratioFromPointer：vertical 分隔条按 y 换算", rRoot !== null && Math.abs(rRoot - 300 / (900 - SASH_GAP)) < 0.02, String(rRoot));
+  const rTop = ratioFromPointer(base, topSplit.id, b, 300, 100);
+  check("ratioFromPointer：内层 horizontal 按 x 换算且被最小宽度钳住", rTop !== null && rTop >= MIN_PANE_WIDTH / (1440 - SASH_GAP) && rTop < 0.4, String(rTop));
+  check("无效 splitId 返回 null", ratioFromPointer(base, "nope", b, 1, 1) === null);
+
+  const step1 = setRatio(base, rootSplit.id, rRoot).root;
+  check("改根 ratio：两个内层 ratio 保持原值", findSplitRatio(step1, topSplit.id) === topSplit.ratio && findSplitRatio(step1, bottomSplit.id) === bottomSplit.ratio);
+  const step2 = setRatio(step1, topSplit.id, rTop).root;
+  check("改内层 ratio：外层与另一内层 ratio 保持原值", findSplitRatio(step2, rootSplit.id) === rRoot && findSplitRatio(step2, bottomSplit.id) === bottomSplit.ratio);
+  check("ratio 改动不影响窗格 / 页签归属", JSON.stringify(collectPanes(step2).map((p) => p.tabIds)) === JSON.stringify(collectPanes(base).map((p) => p.tabIds)));
+  check("ratio 改动后矩形仍合法", validRects(step2));
+
+  for (const [label, split] of [["根（上下）", rootSplit], ["内层（左右）", topSplit]]) {
+    const minRatio = ratioFromPointer(base, split.id, b, -5000, -5000);
+    const minRoot = setRatio(base, split.id, minRatio).root;
+    const maxRatio = ratioFromPointer(base, split.id, b, 9999, 9999);
+    const maxRoot = setRatio(base, split.id, maxRatio).root;
+    check(
+      `${label} 拖到两端仍满足所有窗格最小尺寸`,
+      [minRoot, maxRoot].every((tree) =>
+        computeLayoutRects(tree, b).panes.every((p) => p.rect.width >= MIN_PANE_WIDTH && p.rect.height >= MIN_PANE_HEIGHT)),
+    );
+  }
+
+  const small = bounds(1000, 700);
+  const ratiosBefore = collectSplits(step2).map((s) => s.ratio);
+  const widthsBefore = computeLayoutRects(step2, b).panes.map((p) => p.rect.width);
+  const widthsAfter = computeLayoutRects(step2, small).panes.map((p) => p.rect.width);
+  check("窗口缩放不会改写树里的 ratio", JSON.stringify(ratiosBefore) === JSON.stringify(collectSplits(step2).map((s) => s.ratio)));
+  check("窗口变窄后按 ratio 重算、宽度相应缩小", widthsAfter.every((w, i) => w <= widthsBefore[i]) && widthsAfter.some((w, i) => w < widthsBefore[i]));
+  check("窗口缩放后矩形合法", validRects(step2, small));
+
+  // 连续拖动模拟（主进程轮询 / renderer pointermove 都会走这条路径）
+  let sim = base;
+  for (const y of [500, 470, 440, 410, 380, 350, 320]) {
+    sim = setRatio(sim, rootSplit.id, ratioFromPointer(sim, rootSplit.id, b, 0, y)).root;
+  }
+  check("快速连续拖动后 ratio 单调下降", findSplitRatio(sim, rootSplit.id) < 0.5);
+  check(
+    "连续拖动不改变树结构 / 页签 / 其它比例",
+    collectSplits(sim).length === 3 &&
+      sortedIds(allTabIds(sim)) === "a,b,c,d" &&
+      findSplitRatio(sim, topSplit.id) === topSplit.ratio,
+  );
+  check("连续拖动过程中布局始终合法", validRects(sim));
+
+  const dir2 = mkdtempSync(join(tmpdir(), "pi-web-desktop-sash-ratio-"));
+  try {
+    const tabs = ["a", "b", "c", "d"].map((id) => ({ id, path: "/", title: id, pinned: false }));
+    saveTabs(dir2, toPersistedTabs({
+      tabs,
+      activeId: "a",
+      groups: collectPanes(sim).map((p) => ({ tabIds: p.tabIds, activeId: p.activeId })),
+      focused: 0,
+      layout: layoutKind(sim),
+      tree: sim,
+      focusedPaneId: collectPanes(sim)[0].id,
+    }));
+    const loaded = loadTabs(dir2);
+    const restored = fromPersistedTree(loaded.layout.root, (i) => tabs[i].id);
+    eq("重启后每个 SplitNode 的 ratio 都恢复", collectSplits(restored).map((s) => s.ratio), collectSplits(sim).map((s) => s.ratio));
+    eq("重启后每个 SplitNode 的方向 / id 都恢复", collectSplits(restored).map((s) => [s.id, s.direction]), collectSplits(sim).map((s) => [s.id, s.direction]));
+    check("恢复后按当前窗口重算布局仍合法", validRects(restored));
+  } finally {
+    rmSync(dir2, { recursive: true, force: true });
+  }
+}
+
 /* ------------------------- 静态契约：TabManager 接线 ------------------------- */
 {
   const manager = readFileSync(new URL("../src/main/tabs/tab-manager.ts", import.meta.url), "utf8");
@@ -433,6 +515,28 @@ function safeTiny(root) {
   );
   check("持久化同时写 v2 树与旧 split 镜像", persisted.includes("split: legacy") && persisted.includes("root: toPersistedTree"));
   check("最多 4 个 Pane 的限制仍在主进程侧", manager.includes("MAX_PANES"));
+
+  /* ---- M2：分隔条拖动接线 ---- */
+  const tabbar = readFileSync(new URL("../src/renderer/tabbar/tabbar.ts", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/renderer/tabbar/style.css", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../src/renderer/tabbar/index.html", import.meta.url), "utf8");
+  const types = readFileSync(new URL("../src/shared/types.ts", import.meta.url), "utf8");
+  const preload = readFileSync(new URL("../src/preload/tabbar.ts", import.meta.url), "utf8");
+  const ipc = readFileSync(new URL("../src/main/ipc.ts", import.meta.url), "utf8");
+  check("renderer 用 Pointer Events + pointer capture", ["pointerdown", "setPointerCapture", "pointerup", "pointercancel", "lostpointercapture", "releasePointerCapture"].every((n) => tabbar.includes(n)));
+  check("拖动用 requestAnimationFrame 合并 IPC", tabbar.includes("requestAnimationFrame") && tabbar.includes("cancelAnimationFrame"));
+  check("结束信号覆盖窗口失焦", tabbar.includes('addEventListener("blur", finishSashDrag)'));
+  check("分隔条 DOM 按 id 复用，不整层重建", tabbar.includes("const sashEls = new Map") && !tabbar.includes("sashLayer.replaceChildren()"));
+  check("拖动中只增量更新页签条位置", tabbar.includes("if (sashDragging && splitMode)"));
+  check("CSS 有对应方向的调整光标与细线", css.includes("col-resize") && css.includes("row-resize") && css.includes(".sash::after"));
+  check("sash 在独立层，不与 pane-layer 混用", html.includes('id="sash-layer"'));
+  check("主进程拖动中不写盘", manager.includes("if (this.sashDragging) return;"));
+  check("拖动结束才落盘", manager.includes("endSashDrag()") && manager.includes("this.persist();"));
+  check("主进程用 screen 坐标轮询 + mouseUp / 看门狗兜底", manager.includes("getCursorScreenPoint") && manager.includes('input.type === "mouseUp"') && manager.includes("30_000"));
+  check("拖动中不抢焦点 / 不刷新草稿上下文", manager.includes("if (!this.sashDragging) this.options.onTabContextChanged?.()"));
+  check("跨进程晚到的旧 pointermove 被丢弃（防 ratio 回跳）", manager.includes("stamp < this.lastSashAt - 2"));
+  check("layout() 只切变化的可见性（拖动零闪烁）", manager.includes("if (was !== should) tab.view.setVisible(should)"));
+  check("三处 IPC 通道声明一致", [types, preload, ipc].every((f) => ["beginSashDrag", "setSashRatio", "endSashDrag"].every((n) => f.includes(n))));
 }
 
 /* ------------------------- 单一数据源 ------------------------- */

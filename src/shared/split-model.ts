@@ -22,8 +22,16 @@ export type Placement = "before" | "after";
 
 /** 页签条高度（与 main/titlebar.ts、renderer/tabbar/style.css 一致） */
 export const TABBAR_HEIGHT = 40;
-/** 窗格之间的间隔，同时也是分隔条（sash）的视觉宽度 */
+/** 旧版 v1 平面公式的窗格间隔（只给 split.ts 的 computePaneRects / 旧回归用） */
 export const PANE_GAP = 4;
+/** Split Tree 的窗格间隔，同时也是分隔条的**有效命中宽度**。
+ *  WebContentsView 是原生子视图，会盖住窗口自己的渲染层；只有这条没有视图覆盖的
+ *  空隙能可靠接收 Pointer Events，所以从 4px 加宽到 8px（视觉仍只画 2px 细线）。 */
+export const SASH_GAP = 8;
+/** 分隔条视觉线宽（CSS 画在 SASH_GAP 正中） */
+export const SASH_LINE = 2;
+/** 名义命中宽度；有效值等于 SASH_GAP */
+export const SASH_HIT_SIZE = SASH_GAP;
 /** 一个 pi-web 页面比较吃宽度，最多 4 个窗格 */
 export const MAX_PANES = 4;
 /** 窗格最小尺寸：调整比例 / 继续拆分时保证两边都不小于它。
@@ -35,8 +43,6 @@ export const MIN_PANE_HEIGHT = 260;
 /** ratio 的硬边界，避免 0 / 1 导致某一侧完全消失 */
 export const MIN_RATIO = 0.05;
 export const MAX_RATIO = 0.95;
-/** 分隔条的鼠标命中宽度（视觉仍是 PANE_GAP，M2 用） */
-export const SASH_HIT_SIZE = 12;
 /** tabs.json 里 Split Tree 的版本（复用 tab-persistence.ts 的 version 机制） */
 export const LAYOUT_SCHEMA_VERSION = 2;
 
@@ -435,7 +441,7 @@ export function setRatio(root: LayoutNode, splitId: string, ratio: number): Move
 export function minSpanAlong(
   node: LayoutNode,
   axis: SplitDirection,
-  gap = PANE_GAP,
+  gap = SASH_GAP,
   minW = MIN_PANE_WIDTH,
   minH = MIN_PANE_HEIGHT,
 ): number {
@@ -448,7 +454,7 @@ export function minSpanAlong(
 /**
  * 从根节点递归算出所有 PaneNode 的最终 bounds。
  *  - 按 direction 决定分割方向，按 ratio 算第一个子区域；
- *  - 每处扣掉 PANE_GAP，最后一格吃掉余数；
+ *  - 每处扣掉 SASH_GAP，最后一格吃掉余数；
  *  - 空间允许时钳到最小尺寸；空间不足时安全降级为按比例（不产生 NaN / 负面积）；
  *  - 同时输出每个 SplitNode 的分隔条矩形和所有节点矩形。
  */
@@ -457,7 +463,7 @@ export function computeLayoutRects(
   bounds: Rect,
   options: LayoutOptions = {},
 ): LayoutResult {
-  const gap = Math.max(0, options.gap ?? PANE_GAP);
+  const gap = Math.max(0, options.gap ?? SASH_GAP);
   const minW = Math.max(1, options.minPaneWidth ?? MIN_PANE_WIDTH);
   const minH = Math.max(1, options.minPaneHeight ?? MIN_PANE_HEIGHT);
   const width = Math.max(bounds.width, 1);
@@ -518,7 +524,7 @@ export function clampRatioForBounds(
   const split = findSplit(root, splitId);
   const wanted = clampRatio(ratio);
   if (!split) return wanted;
-  const gap = Math.max(0, options.gap ?? PANE_GAP);
+  const gap = Math.max(0, options.gap ?? SASH_GAP);
   const minW = Math.max(1, options.minPaneWidth ?? MIN_PANE_WIDTH);
   const minH = Math.max(1, options.minPaneHeight ?? MIN_PANE_HEIGHT);
   const rect = computeLayoutRects(root, bounds, options).nodes[splitId];
@@ -531,6 +537,32 @@ export function clampRatioForBounds(
   return Math.min(Math.max(wanted, needFirst / avail), 1 - needSecond / avail);
 }
 
+/**
+ * M2：把「窗口内容区坐标」换算成某个 SplitNode 的目标 ratio。
+ * 该 SplitNode 的矩形取自同一份 computeLayoutRects 结果（nodes），且只依赖祖先 ratio，
+ * 拖动它自己的 ratio 不会让矩形漂移 —— 主进程与渲染层不需要各自换算坐标。
+ */
+export function ratioFromPointer(
+  root: LayoutNode,
+  splitId: string,
+  bounds: Rect,
+  x: number,
+  y: number,
+  options: LayoutOptions = {},
+): number | null {
+  const split = findSplit(root, splitId);
+  if (!split) return null;
+  const gap = Math.max(0, options.gap ?? SASH_GAP);
+  const rect = computeLayoutRects(root, bounds, options).nodes[splitId];
+  if (!rect) return null;
+  const horizontal = split.direction === "horizontal";
+  const avail = (horizontal ? rect.width : rect.height) - gap;
+  if (avail <= 0) return null;
+  const origin = horizontal ? rect.x : rect.y;
+  const position = horizontal ? x : y;
+  return clampRatioForBounds(root, splitId, (position - origin) / avail, bounds, options);
+}
+
 /** 继续拆分前判断：目标窗格被一分为二后两边是否都够用 */
 export function canSplit(
   root: LayoutNode,
@@ -540,7 +572,7 @@ export function canSplit(
   options: LayoutOptions = {},
 ): boolean {
   if (paneCount(root) >= MAX_PANES) return false;
-  const gap = Math.max(0, options.gap ?? PANE_GAP);
+  const gap = Math.max(0, options.gap ?? SASH_GAP);
   const minW = Math.max(1, options.minPaneWidth ?? MIN_PANE_WIDTH);
   const minH = Math.max(1, options.minPaneHeight ?? MIN_PANE_HEIGHT);
   const rect = computeLayoutRects(root, bounds, options).panes.find((pane) => pane.id === paneId)?.rect;

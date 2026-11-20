@@ -32,6 +32,9 @@ const CH = {
   splitTabToEdge: "tabs:split-tab-to-edge",
   beginTabDrag: "tabs:begin-tab-drag",
   endTabDrag: "tabs:end-tab-drag",
+  beginSashDrag: "tabs:begin-sash-drag",
+  setSashRatio: "tabs:set-sash-ratio",
+  endSashDrag: "tabs:end-sash-drag",
   showSplitMenu: "tabs:split-menu",
   showGroupMenu: "tabs:group-menu",
   serverState: "shell:get-state",
@@ -94,6 +97,11 @@ const api: TabbarApi = {
     ipcRenderer.invoke(CH.splitTabToEdge, id, side) as Promise<void>,
   beginTabDrag: () => ipcRenderer.invoke(CH.beginTabDrag) as Promise<void>,
   endTabDrag: () => ipcRenderer.invoke(CH.endTabDrag) as Promise<void>,
+  beginSashDrag: (splitId: string) =>
+    ipcRenderer.invoke(CH.beginSashDrag, splitId) as Promise<void>,
+  setSashRatio: (splitId: string, x: number, y: number, stamp: number) =>
+    ipcRenderer.invoke(CH.setSashRatio, splitId, x, y, stamp) as Promise<void>,
+  endSashDrag: () => ipcRenderer.invoke(CH.endSashDrag) as Promise<void>,
   showSplitMenu: (x, y) => ipcRenderer.invoke(CH.showSplitMenu, x, y) as Promise<void>,
   showGroupMenu: (index, x, y) =>
     ipcRenderer.invoke(CH.showGroupMenu, index, x, y) as Promise<void>,

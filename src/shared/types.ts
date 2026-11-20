@@ -125,6 +125,14 @@ export interface TabbarApi {
   /** 拖动期间临时隐藏所有内容视图，好让渲染层的投放层露出来 */
   beginTabDrag(): Promise<void>;
   endTabDrag(): Promise<void>;
+  /* ---- 分隔条拖动（M2） ---- */
+  /** 开始拖某个 SplitNode 的分隔条：期间只更新 bounds / 不写盘 / 不抢焦点 */
+  beginSashDrag(splitId: string): Promise<void>;
+  /** 拖动中的实时坐标（窗口内容区 DIP）+ 事件时间戳；ratio 由主进程按同一份布局结果换算。
+   *  stamp 用来丢弃比主进程轮询更旧的 IPC，避免 ratio 回跳。 */
+  setSashRatio(splitId: string, x: number, y: number, stamp: number): Promise<void>;
+  /** 松开 / 取消：落盘最终 ratio */
+  endSashDrag(): Promise<void>;
   /** 分屏按钮的下拉菜单 */
   showSplitMenu(x: number, y: number): Promise<void>;
   /** 某个窗格的右键/更多菜单：把哪个页签移动到这里 */
@@ -265,6 +273,9 @@ export const TAB_IPC = {
   splitTabToEdge: "tabs:split-tab-to-edge",
   beginTabDrag: "tabs:begin-tab-drag",
   endTabDrag: "tabs:end-tab-drag",
+  beginSashDrag: "tabs:begin-sash-drag",
+  setSashRatio: "tabs:set-sash-ratio",
+  endSashDrag: "tabs:end-sash-drag",
   showSplitMenu: "tabs:split-menu",
   showGroupMenu: "tabs:group-menu",
 } as const;

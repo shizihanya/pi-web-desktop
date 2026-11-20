@@ -155,6 +155,21 @@ export function registerTabIpc(
   );
   ipcMain.handle(TAB_IPC.beginTabDrag, () => withTabs((tabs) => tabs.beginTabDrag()));
   ipcMain.handle(TAB_IPC.endTabDrag, () => withTabs((tabs) => tabs.endTabDrag()));
+  /* ---- 分隔条拖动（M2）---- */
+  ipcMain.handle(TAB_IPC.beginSashDrag, (_event, splitId: string) =>
+    withTabs((tabs) => tabs.beginSashDrag(String(splitId ?? ""))),
+  );
+  ipcMain.handle(TAB_IPC.setSashRatio, (_event, splitId: string, x: number, y: number, stamp: number) =>
+    withTabs((tabs) =>
+      tabs.setSashRatio(
+        String(splitId ?? ""),
+        Number(x) || 0,
+        Number(y) || 0,
+        Number.isFinite(Number(stamp)) ? Number(stamp) : Date.now(),
+      ),
+    ),
+  );
+  ipcMain.handle(TAB_IPC.endSashDrag, () => withTabs((tabs) => tabs.endSashDrag()));
   ipcMain.handle(TAB_IPC.showSplitMenu, (_event, x: number, y: number) =>
     withTabs((tabs) => tabs.showSplitMenu(x, y)),
   );

@@ -13,6 +13,7 @@ const tabsBox = document.getElementById("tabs") as HTMLDivElement;
 const tabbar = document.getElementById("tabbar") as HTMLDivElement;
 const windowTools = document.getElementById("window-tools") as HTMLDivElement;
 const paneLayer = document.getElementById("pane-layer") as HTMLDivElement;
+const sashLayer = document.getElementById("sash-layer") as HTMLDivElement;
 const dragOverlay = document.getElementById("drag-overlay") as HTMLDivElement;
 const newTabButton = document.getElementById("new-tab") as HTMLButtonElement;
 const settingsButton = document.getElementById("open-settings") as HTMLButtonElement;
@@ -29,6 +30,16 @@ let dropIndex: number | null = null;
 let splitDragging = false;
 /** 上一次写到 :root 的内联变量，主题切换时先清掉 */
 let appliedVars: string[] = [];
+
+/* ---------------- 分隔条拖动（Pointer Events，M2） ----------------
+ * 分隔条 DOM 按 SplitNode id 复用：拖动中主进程会持续推 snapshot，
+ * 若整层重建会丢掉 pointer capture，所以只增量更新位置。 */
+const sashEls = new Map<string, HTMLElement>();
+let sashDragging = false;
+let sashDragId: string | null = null;
+let sashPointerId: number | null = null;
+let sashRaf = 0;
+let pendingPoint: { x: number; y: number; stamp: number } | null = null;
 
 /** 页签状态的人话说明（同时也进 hover tooltip / 无障碍标签） */
 const STATUS_LABEL: Record<TabStatus, string> = {
@@ -337,6 +348,104 @@ function endSplitDrag(): void {
   render();
 }
 
+/** 统一收尾：pointerup / pointercancel / lostpointercapture / 窗口失焦都走这里 */
+function finishSashDrag(): void {
+  if (!sashDragging) return;
+  sashDragging = false;
+  const id = sashDragId;
+  sashDragId = null;
+  const el = id ? sashEls.get(id) : undefined;
+  el?.classList.remove("is-dragging");
+  if (sashRaf) {
+    cancelAnimationFrame(sashRaf);
+    sashRaf = 0;
+  }
+  pendingPoint = null;
+  if (el && sashPointerId !== null) {
+    try {
+      el.releasePointerCapture(sashPointerId);
+    } catch {
+      // 指针可能已经被系统释放 / 元素已移除
+    }
+  }
+  sashPointerId = null;
+  document.documentElement.classList.remove("sash-dragging", "sash-vertical");
+  void window.piWebTabs.endSashDrag();
+  render();
+}
+
+function bindSash(el: HTMLElement): void {
+  el.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    const splitId = el.dataset.id;
+    if (!splitId) return;
+    event.preventDefault();
+    finishSashDrag(); // 上一次没干净收尾时先复位
+    sashDragging = true;
+    sashDragId = splitId;
+    sashPointerId = event.pointerId;
+    el.classList.add("is-dragging");
+    document.documentElement.classList.add("sash-dragging");
+    if (el.dataset.direction === "vertical") {
+      document.documentElement.classList.add("sash-vertical");
+    }
+    try {
+      el.setPointerCapture(event.pointerId);
+    } catch {
+      // 捕获失败也没关系：主进程会轮询屏幕坐标作为可靠输入源
+    }
+    void window.piWebTabs.beginSashDrag(splitId);
+    void window.piWebTabs.setSashRatio(splitId, event.clientX, event.clientY, Date.now());
+  });
+
+  el.addEventListener("pointermove", (event) => {
+    if (!sashDragging || el.dataset.id !== sashDragId) return;
+    // rAF 合并：一帧最多一次 IPC，避免高频拖动打满通道
+    pendingPoint = { x: event.clientX, y: event.clientY, stamp: Date.now() };
+    if (sashRaf) return;
+    sashRaf = requestAnimationFrame(() => {
+      sashRaf = 0;
+      const id = sashDragId;
+      if (!id || !pendingPoint) return;
+      const point = pendingPoint;
+      pendingPoint = null;
+      void window.piWebTabs.setSashRatio(id, point.x, point.y, point.stamp);
+    });
+  });
+
+  el.addEventListener("pointerup", finishSashDrag);
+  el.addEventListener("pointercancel", finishSashDrag);
+  el.addEventListener("lostpointercapture", finishSashDrag);
+}
+
+/** 每个 SplitNode 渲染一条分隔条；按 id 复用 DOM，位置与方向来自主进程的同一份结果 */
+function renderSashes(split: SplitSnapshot): void {
+  const seen = new Set<string>();
+  for (const sash of split.sashes) {
+    seen.add(sash.id);
+    let el = sashEls.get(sash.id);
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "sash";
+      el.dataset.id = sash.id;
+      bindSash(el);
+      sashEls.set(sash.id, el);
+      sashLayer.append(el);
+    }
+    el.dataset.direction = sash.direction;
+    el.style.left = `${sash.x}px`;
+    el.style.top = `${sash.y}px`;
+    el.style.width = `${sash.width}px`;
+    el.style.height = `${sash.height}px`;
+  }
+  for (const [id, el] of sashEls) {
+    if (!seen.has(id)) {
+      el.remove();
+      sashEls.delete(id);
+    }
+  }
+}
+
 /** 分屏：每个窗格一条自己的页签条，绝对定位到该窗格顶部 */
 function renderPaneTabBars(split: SplitSnapshot, current: TabsSnapshot): void {
   const rects = split.rects;
@@ -394,10 +503,26 @@ function render(): void {
   // 拖动期间不要重建页签条：否则 drag 源元素被换掉，dragend 可能永远不来
   if (splitDragging) return;
   const current = snapshot;
-  applyTheme(current.theme, current.customTitleBar);
   const split = current.split;
   const splitMode = split.groups.length > 1;
 
+  // 分隔条元素按 id 复用，绝不整层重建（否则 pointer capture 会丢）
+  renderSashes(split);
+
+  if (sashDragging && splitMode) {
+    // 拖动中只改位置，不重建页签条 DOM（避免高频重建造成卡顿 / 打断 capture）
+    const bars = paneLayer.querySelectorAll<HTMLElement>(".pane-tabbar");
+    split.rects.forEach((r, i) => {
+      const bar = bars[i];
+      if (!bar) return;
+      bar.style.left = `${r.x}px`;
+      bar.style.top = `${r.y}px`;
+      bar.style.width = `${r.width}px`;
+    });
+    return;
+  }
+
+  applyTheme(current.theme, current.customTitleBar);
   tabbar.hidden = splitMode;
   // 工具区里那个全局「+」只在单栏用；分屏时每个窗格都有自己的 +，
   // 否则最右上那一栏会同时出现两个 +。
@@ -486,6 +611,8 @@ function renderStatus(state: ServerState): void {
 
 async function main(): Promise<void> {
   bindDropTarget();
+  // 窗口失焦时鼠标很可能已在别处松开，统一收尾（主进程还有 mouseUp / 看门狗兜底）
+  window.addEventListener("blur", finishSashDrag);
 
   newTabButton.addEventListener("click", () => void window.piWebTabs.open("/"));
   settingsButton.addEventListener("click", () => void window.piWebTabs.openSettings());

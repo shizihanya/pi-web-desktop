@@ -83,6 +83,9 @@
     <!-- 分屏：每个窗格一条自己的页签条，绝对定位到该窗格顶部（VSCode 编辑器组） -->
     <div class="pane-layer" id="pane-layer"></div>
 
+    <!-- 分隔条：每个 SplitNode 一条，正好落在窗格间隔里（那里没有 WebContentsView 覆盖） -->
+    <div class="sash-layer" id="sash-layer"></div>
+
     <!-- 拖动页签时的投放区（内容视图已由主进程临时隐藏） -->
     <div class="drag-overlay" id="drag-overlay" hidden></div>
 
