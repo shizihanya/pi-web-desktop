@@ -86,8 +86,11 @@
     <!-- 分隔条：每个 SplitNode 一条，正好落在窗格间隔里（那里没有 WebContentsView 覆盖） -->
     <div class="sash-layer" id="sash-layer"></div>
 
-    <!-- 拖动页签时的投放区（内容视图已由主进程临时隐藏） -->
+    <!-- 拖动页签时的五方向投放区（内容视图已由主进程临时隐藏） -->
     <div class="drag-overlay" id="drag-overlay" hidden></div>
+
+    <!-- 拖放后的布局预览（主进程算好矩形，这里只画；不接收鼠标事件） -->
+    <div class="drop-preview" id="drop-preview" hidden></div>
 
     <!-- 桌面增强：独立输入工作区。它在 Electron 窗口自己的渲染层，
          主进程给 pi-web 视图让出右侧宽度，所以不会盖住对话、不进 pi-web DOM。 -->

@@ -4,6 +4,7 @@ import type {
   DraftImageData,
   DraftSendResult,
   DraftSnapshot,
+  DropPreview,
   ServerState,
   ShellApi,
   TabbarApi,
@@ -35,6 +36,8 @@ const CH = {
   beginSashDrag: "tabs:begin-sash-drag",
   setSashRatio: "tabs:set-sash-ratio",
   endSashDrag: "tabs:end-sash-drag",
+  previewTabDrop: "tabs:preview-tab-drop",
+  dropTab: "tabs:drop-tab",
   showSplitMenu: "tabs:split-menu",
   showGroupMenu: "tabs:group-menu",
   serverState: "shell:get-state",
@@ -102,6 +105,10 @@ const api: TabbarApi = {
   setSashRatio: (splitId: string, x: number, y: number, stamp: number) =>
     ipcRenderer.invoke(CH.setSashRatio, splitId, x, y, stamp) as Promise<void>,
   endSashDrag: () => ipcRenderer.invoke(CH.endSashDrag) as Promise<void>,
+  previewTabDrop: (id: string, targetPaneId: string, side, insertIndex?) =>
+    ipcRenderer.invoke(CH.previewTabDrop, id, targetPaneId, side, insertIndex) as Promise<DropPreview>,
+  dropTab: (id: string, targetPaneId: string, side, insertIndex?) =>
+    ipcRenderer.invoke(CH.dropTab, id, targetPaneId, side, insertIndex) as Promise<void>,
   showSplitMenu: (x, y) => ipcRenderer.invoke(CH.showSplitMenu, x, y) as Promise<void>,
   showGroupMenu: (index, x, y) =>
     ipcRenderer.invoke(CH.showGroupMenu, index, x, y) as Promise<void>,

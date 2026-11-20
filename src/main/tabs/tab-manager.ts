@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import type { TabInfo, TabStatus, TabsSnapshot, ThemeSnapshot } from "../../shared/types";
 import { DRAFT_MAX_WIDTH, sessionKeyFromPath, type DraftContext } from "./draft-model";
 import type { CompatVerdict } from "./compat";
-import { TAB_IPC } from "../../shared/types";
+import { TAB_IPC, type DropPreview } from "../../shared/types";
 import {
   MAX_PANES,
   paneContentRect,
@@ -25,9 +25,11 @@ import {
 } from "../../shared/split";
 import {
   addEdgePane,
+  applyTabDrop,
   collectPanes,
   computeLayoutRects,
   createPane,
+  type DropSide,
   findPane,
   findSplit,
   fromPersistedTree,
@@ -174,6 +176,8 @@ export class TabManager {
   private sashWatchdog: NodeJS.Timeout | null = null;
   /** 最近一次采用的坐标时间戳：丢弃跨进程晚到的旧 pointermove，防止 ratio 回跳 */
   private lastSashAt = 0;
+  /** 拖页签期间渲染层崩溃时的兜底：30s 后强制恢复内容视图 */
+  private tabDragWatchdog: NodeJS.Timeout | null = null;
 
   /** 窗格列表（DFS 顺序）：与 computeLayoutRects().panes 严格同序 */
   private get groups(): PaneGroup[] {
@@ -862,13 +866,22 @@ export class TabManager {
     this.dragging = true;
     for (const tab of this.tabs) tab.view.setVisible(false);
     this.shownTabIds.clear();
+    this.stopTabDragWatchdog();
+    this.tabDragWatchdog = setTimeout(() => this.endTabDrag(), 30_000);
+    this.tabDragWatchdog.unref?.();
   }
 
   endTabDrag(): void {
     if (this.destroyed) return;
     this.dragging = false;
+    this.stopTabDragWatchdog();
     this.layout();
     this.focusActive();
+  }
+
+  private stopTabDragWatchdog(): void {
+    if (this.tabDragWatchdog) clearTimeout(this.tabDragWatchdog);
+    this.tabDragWatchdog = null;
   }
 
   /* ------------------------- 分隔条拖动（M2） ------------------------- */
@@ -941,6 +954,56 @@ export class TabManager {
     this.sashTimer = null;
     if (this.sashWatchdog) clearTimeout(this.sashWatchdog);
     this.sashWatchdog = null;
+  }
+
+  /* ------------------------- 五方向拖拽（M3） ------------------------- */
+
+  /** 预览：用与落位**同一个** applyTabDrop 算出「假想拖放后的树」，再递归算一次布局。
+   *  绝不改动 this.root，所以拖放取消天然恢复原状；位置仍由主进程唯一计算。 */
+  previewTabDrop(
+    id: string,
+    targetPaneId: string,
+    side: DropSide,
+    insertIndex?: number,
+  ): DropPreview {
+    const [width, height] = this.options.win.isDestroyed() ? [1, 1] : this.options.win.getContentSize();
+    const result = applyTabDrop(this.root, id, targetPaneId, side, insertIndex);
+    const layout = computeLayoutRects(result.root, { x: 0, y: 0, width, height });
+    return {
+      allowed: result.allowed,
+      reason: result.reason,
+      side: result.effectiveSide,
+      targetPaneId,
+      destinationPaneId: result.destinationPaneId,
+      createsPane: result.createsPane,
+      paneCount: paneCount(result.root),
+      panes: layout.panes,
+      sashes: layout.sashes,
+    };
+  }
+
+  /** 落位：与预览共用同一个纯函数，保证「预览看到的 = 真正得到的」 */
+  dropTab(id: string, targetPaneId: string, side: DropSide, insertIndex?: number): void {
+    if (this.destroyed) return;
+    const probe = applyTabDrop(this.root, id, targetPaneId, side, insertIndex);
+    if (!probe.allowed || !probe.changed) {
+      this.endTabDrag();
+      return;
+    }
+    // 源 Pane 只剩最后一个 Tab：先补一个空白页签保住它（与 M1 splitWithTab 一致，
+    // 不关闭、不重建、不重载任何原有 Tab，且窗格数确实 +1）
+    if (probe.placeholderPaneId) {
+      const index = this.groups.findIndex((pane) => pane.id === probe.placeholderPaneId);
+      if (index >= 0) this.createTab("/", { activate: false, group: index });
+    }
+    const final = applyTabDrop(this.root, id, targetPaneId, side, insertIndex);
+    if (!final.allowed || !final.changed) {
+      this.endTabDrag();
+      return;
+    }
+    this.root = final.root;
+    this.focusedPaneId = findPane(this.root, final.destinationPaneId)?.id ?? this.groups[0].id;
+    this.afterGroupChange(); // dragging=false → layout() 恢复视图，不重建、不重载
   }
 
   /** 页签栏右侧「分屏」按钮的下拉菜单 */
@@ -1116,6 +1179,7 @@ export class TabManager {
       }
     }
     this.themes.stop();
+    this.stopTabDragWatchdog();
     if (this.sashDragging) this.endSashDrag();
     this.stopSashTimers();
     if (this.statusTimer) clearInterval(this.statusTimer);
@@ -1234,6 +1298,7 @@ export class TabManager {
   /** 分组/焦点变化后统一收尾（重排、聚焦、通知、刷新主题） */
   private afterGroupChange(): void {
     this.dragging = false;
+    this.stopTabDragWatchdog();
     this.syncActive();
     this.markVisibleSeen();
     this.layout();

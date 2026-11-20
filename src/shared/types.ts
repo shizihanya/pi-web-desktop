@@ -4,6 +4,7 @@
  */
 
 import type { SplitPreset, SplitSnapshot } from "./split";
+import type { DropSide, PaneLayout, SashRect } from "./split-model";
 
 export type ServerPhase = "idle" | "resolving" | "starting" | "ready" | "failed";
 
@@ -94,6 +95,23 @@ export interface TabsSnapshot {
   split: SplitSnapshot;
 }
 
+/** M3：主进程算好的「假想拖放后布局」，渲染层只负责画，不自己算位置 */
+export interface DropPreview {
+  /** 边缘投放在 4 窗格上限时为 false */
+  allowed: boolean;
+  reason: string;
+  side: DropSide;
+  targetPaneId: string;
+  /** 页签拖放后会落在哪个 Pane（预览高亮用） */
+  destinationPaneId: string;
+  /** 本次是否会新建窗格 */
+  createsPane: boolean;
+  paneCount: number;
+  /** 拖放后所有窗格的矩形（主进程 computeLayoutRects 的结果） */
+  panes: PaneLayout[];
+  sashes: SashRect[];
+}
+
 export interface TabbarApi {
   list(): Promise<TabsSnapshot>;
   /** 开新页签（不传则开服务根页） */
@@ -133,6 +151,16 @@ export interface TabbarApi {
   setSashRatio(splitId: string, x: number, y: number, stamp: number): Promise<void>;
   /** 松开 / 取消：落盘最终 ratio */
   endSashDrag(): Promise<void>;
+  /* ---- 五方向拖拽（M3） ---- */
+  /** 悬停时让主进程按「假想拖放后的树」算出预览布局（不改真实树） */
+  previewTabDrop(
+    id: string,
+    targetPaneId: string,
+    side: DropSide,
+    insertIndex?: number,
+  ): Promise<DropPreview>;
+  /** 真正落位；与预览共用同一个 applyTabDrop */
+  dropTab(id: string, targetPaneId: string, side: DropSide, insertIndex?: number): Promise<void>;
   /** 分屏按钮的下拉菜单 */
   showSplitMenu(x: number, y: number): Promise<void>;
   /** 某个窗格的右键/更多菜单：把哪个页签移动到这里 */
@@ -276,6 +304,8 @@ export const TAB_IPC = {
   beginSashDrag: "tabs:begin-sash-drag",
   setSashRatio: "tabs:set-sash-ratio",
   endSashDrag: "tabs:end-sash-drag",
+  previewTabDrop: "tabs:preview-tab-drop",
+  dropTab: "tabs:drop-tab",
   showSplitMenu: "tabs:split-menu",
   showGroupMenu: "tabs:group-menu",
 } as const;

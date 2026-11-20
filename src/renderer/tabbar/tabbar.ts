@@ -1,11 +1,18 @@
 import type {
+  DropPreview,
   ServerState,
   TabInfo,
   TabStatus,
   TabsSnapshot,
   ThemeSnapshot,
 } from "../../shared/types";
-import { topRightPaneIndex, type PaneRect, type SplitSnapshot } from "../../shared/split";
+import {
+  MAX_PANES,
+  topRightPaneIndex,
+  type DropSide,
+  type PaneRect,
+  type SplitSnapshot,
+} from "../../shared/split";
 // 桌面增强：独立输入工作区面板（只往窗口自己的渲染层挂 UI，不改 pi-web 页面）
 import "./draft-panel";
 
@@ -15,6 +22,7 @@ const windowTools = document.getElementById("window-tools") as HTMLDivElement;
 const paneLayer = document.getElementById("pane-layer") as HTMLDivElement;
 const sashLayer = document.getElementById("sash-layer") as HTMLDivElement;
 const dragOverlay = document.getElementById("drag-overlay") as HTMLDivElement;
+const dropPreviewLayer = document.getElementById("drop-preview") as HTMLDivElement;
 const newTabButton = document.getElementById("new-tab") as HTMLButtonElement;
 const settingsButton = document.getElementById("open-settings") as HTMLButtonElement;
 const splitButton = document.getElementById("split-button") as HTMLButtonElement;
@@ -40,6 +48,14 @@ let sashDragId: string | null = null;
 let sashPointerId: number | null = null;
 let sashRaf = 0;
 let pendingPoint: { x: number; y: number; stamp: number } | null = null;
+
+/* ---------------- 五方向拖放预览（M3） ---------------- */
+let dragPreview: DropPreview | null = null;
+let previewKey = "";
+let previewRaf = 0;
+let pendingPreview:
+  | { key: string; id: string; paneId: string; side: DropSide; insertIndex?: number }
+  | null = null;
 
 /** 页签状态的人话说明（同时也进 hover tooltip / 无障碍标签） */
 const STATUS_LABEL: Record<TabStatus, string> = {
@@ -212,12 +228,43 @@ function applyTheme(theme: ThemeSnapshot, customTitleBar: boolean): void {
   }
 }
 
-/* ---------------- 分屏拖动：投放区 ---------------- */
+/* ---------------- 分屏拖动：五方向投放 + 主进程预览（M3） ---------------- */
 
-function clearOver(): void {
-  for (const zone of dragOverlay.querySelectorAll<HTMLElement>(".drop-zone")) {
-    zone.classList.remove("is-over");
-  }
+const REGION_LABEL: Record<DropSide, string> = {
+  center: "放到这里（合并页签）",
+  left: "← 左侧新建",
+  right: "右侧新建 →",
+  top: "↑ 上方新建",
+  bottom: "↓ 下方新建",
+};
+
+/** 五块互不重叠的区域；命中判定与视觉用同一套计算，避免「看到的」和「丢进去的」不一致 */
+function dropRegions(
+  rect: PaneRect,
+): { side: DropSide; x: number; y: number; width: number; height: number }[] {
+  const ex = Math.max(24, Math.min(120, rect.width * 0.28));
+  const ey = Math.max(24, Math.min(90, rect.height * 0.28));
+  const innerW = Math.max(rect.width - ex * 2, 1);
+  const innerH = Math.max(rect.height - ey * 2, 1);
+  return [
+    { side: "left", x: rect.x, y: rect.y, width: ex, height: rect.height },
+    { side: "right", x: rect.x + rect.width - ex, y: rect.y, width: ex, height: rect.height },
+    { side: "top", x: rect.x + ex, y: rect.y, width: innerW, height: ey },
+    { side: "bottom", x: rect.x + ex, y: rect.y + rect.height - ey, width: innerW, height: ey },
+    { side: "center", x: rect.x + ex, y: rect.y + ey, width: innerW, height: innerH },
+  ];
+}
+
+function sideForPoint(rect: PaneRect, clientX: number, clientY: number): DropSide {
+  const ex = Math.max(24, Math.min(120, rect.width * 0.28));
+  const ey = Math.max(24, Math.min(90, rect.height * 0.28));
+  const dx = clientX - rect.x;
+  const dy = clientY - rect.y;
+  if (dx < ex) return "left";
+  if (dx > rect.width - ex) return "right";
+  if (dy < ey) return "top";
+  if (dy > rect.height - ey) return "bottom";
+  return "center";
 }
 
 function ghostInsertIndex(zone: HTMLElement, clientX: number): number {
@@ -229,106 +276,172 @@ function ghostInsertIndex(zone: HTMLElement, clientX: number): number {
   return ghosts.length;
 }
 
+function clearHighlights(): void {
+  for (const region of dragOverlay.querySelectorAll<HTMLElement>(".drop-region")) {
+    region.classList.remove("is-over");
+  }
+}
+
+function highlightRegion(zone: HTMLElement, side: DropSide): void {
+  for (const region of dragOverlay.querySelectorAll<HTMLElement>(".drop-region")) {
+    region.classList.toggle(
+      "is-over",
+      region.parentElement === zone && region.dataset.side === side,
+    );
+  }
+}
+
+/** 主进程算好的「假想拖放后布局」；渲染层只画矩形，不自己算位置 */
+function renderDropPreview(): void {
+  dropPreviewLayer.replaceChildren();
+  if (!dragPreview) return;
+  const preview = dragPreview;
+  for (const pane of preview.panes) {
+    const el = document.createElement("div");
+    el.className = "drop-preview-pane";
+    if (pane.id === preview.destinationPaneId) {
+      el.classList.add("is-destination");
+      const label = document.createElement("span");
+      label.className = "drop-preview-label";
+      label.textContent = preview.createsPane ? "新建窗格" : "拖放后位置";
+      el.append(label);
+    }
+    el.style.left = `${pane.rect.x}px`;
+    el.style.top = `${pane.rect.y}px`;
+    el.style.width = `${pane.rect.width}px`;
+    el.style.height = `${pane.rect.height}px`;
+    dropPreviewLayer.append(el);
+  }
+  if (!preview.allowed && preview.reason) {
+    const banner = document.createElement("div");
+    banner.className = "drop-reason is-warning";
+    banner.textContent = preview.reason;
+    dropPreviewLayer.append(banner);
+  }
+}
+
+/** dragover 高频：rAF 合并 + 参数签名去重；晚到 / 取消后的预览结果一律丢弃 */
+function requestDropPreview(
+  id: string,
+  paneId: string,
+  side: DropSide,
+  insertIndex?: number,
+): void {
+  const key = `${id}|${paneId}|${side}|${insertIndex ?? ""}`;
+  if (key === previewKey) return;
+  previewKey = key;
+  pendingPreview = { key, id, paneId, side, insertIndex };
+  if (previewRaf) return;
+  previewRaf = requestAnimationFrame(() => {
+    previewRaf = 0;
+    const req = pendingPreview;
+    pendingPreview = null;
+    if (!req || !splitDragging) return;
+    void window.piWebTabs
+      .previewTabDrop(req.id, req.paneId, req.side, req.insertIndex)
+      .then((preview) => {
+        if (!splitDragging || previewKey !== req.key) return;
+        dragPreview = preview;
+        renderDropPreview();
+      })
+      .catch(() => {});
+  });
+}
+
 function createDropZone(
   rect: PaneRect,
+  paneId: string,
   title: string,
   ghosts: string[],
-  isEdge: boolean,
+  atLimit: boolean,
 ): HTMLElement {
   const zone = document.createElement("div");
-  zone.className = `drop-zone${isEdge ? " drop-edge" : ""}`;
+  zone.className = "drop-zone";
+  zone.dataset.paneId = paneId;
   zone.style.left = `${rect.x}px`;
   zone.style.top = `${rect.y}px`;
   zone.style.width = `${rect.width}px`;
   zone.style.height = `${rect.height}px`;
 
-  const label = document.createElement("div");
-  label.className = "drop-zone-title";
-  label.textContent = title;
-  zone.append(label);
+  for (const region of dropRegions(rect)) {
+    const el = document.createElement("div");
+    el.className = `drop-region is-${region.side}`;
+    el.dataset.side = region.side;
+    el.style.left = `${region.x - rect.x}px`;
+    el.style.top = `${region.y - rect.y}px`;
+    el.style.width = `${region.width}px`;
+    el.style.height = `${region.height}px`;
+    if (region.side !== "center" && atLimit) el.classList.add("is-disabled");
 
-  if (ghosts.length > 0) {
-    const box = document.createElement("div");
-    box.className = "drop-ghosts";
-    for (const text of ghosts) {
-      const ghost = document.createElement("span");
-      ghost.className = "drop-ghost";
-      ghost.textContent = text;
-      box.append(ghost);
+    const label = document.createElement("span");
+    label.className = "drop-region-label";
+    label.textContent = region.side === "center" ? title : REGION_LABEL[region.side];
+    el.append(label);
+
+    if (region.side === "center" && ghosts.length > 0) {
+      const box = document.createElement("div");
+      box.className = "drop-ghosts";
+      for (const text of ghosts) {
+        const ghost = document.createElement("span");
+        ghost.className = "drop-ghost";
+        ghost.textContent = text;
+        box.append(ghost);
+      }
+      el.append(box);
     }
-    zone.append(box);
+    zone.append(el);
   }
 
   zone.addEventListener("dragover", (event) => {
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-    clearOver();
-    zone.classList.add("is-over");
+    if (!dragId) return;
+    const side = sideForPoint(rect, event.clientX, event.clientY);
+    const insertIndex = side === "center" ? ghostInsertIndex(zone, event.clientX) : undefined;
+    highlightRegion(zone, side);
+    requestDropPreview(dragId, paneId, side, insertIndex);
   });
-  zone.addEventListener("dragleave", () => zone.classList.remove("is-over"));
   zone.addEventListener("drop", (event) => {
     event.preventDefault();
-    zone.classList.remove("is-over");
     if (!dragId) return;
+    const side = sideForPoint(rect, event.clientX, event.clientY);
+    const insertIndex = side === "center" ? ghostInsertIndex(zone, event.clientX) : undefined;
     const id = dragId;
-    const edge = zone.dataset.edge as "left" | "right" | undefined;
-    const insertIndex = edge ? undefined : ghostInsertIndex(zone, event.clientX);
     dragId = null;
-    if (edge) void window.piWebTabs.splitTabToEdge(id, edge);
-    else void window.piWebTabs.moveTabToGroup(id, Number(zone.dataset.group), insertIndex);
-    // 不依赖 dragend：drop 后直接收尾，避免 notify 重建 DOM 让 dragend 丢失
-    endSplitDrag();
+    void window.piWebTabs.dropTab(id, paneId, side, insertIndex);
+    // 主进程 dropTab 自己会恢复视图；这里只本地收尾，不依赖 dragend
+    endSplitDrag(false);
   });
   return zone;
 }
 
 function renderDragOverlay(split: SplitSnapshot, current: TabsSnapshot): void {
   dragOverlay.replaceChildren();
-  const width = window.innerWidth;
-  const height = window.innerHeight;
-  const inset = 6;
-
+  const atLimit = split.groups.length >= MAX_PANES;
   split.groups.forEach((group, index) => {
-    const rect = split.rects[index];
     const zone = createDropZone(
-      {
-        x: rect.x + inset,
-        y: rect.y + inset,
-        width: Math.max(rect.width - inset * 2, 10),
-        height: Math.max(rect.height - inset * 2, 10),
-      },
-      `窗格 ${index + 1} · 放到这里`,
+      split.rects[index],
+      split.paneIds[index],
+      `窗格 ${index + 1} · 放到这里（合并页签）`,
       group.tabIds.map((id) => current.tabs.find((tab) => tab.id === id)?.title || "新页签"),
-      false,
+      atLimit,
     );
-    zone.dataset.group = String(index);
     dragOverlay.append(zone);
   });
-
-  // 拖到最左 / 最右：新建一列（后加的盖在前面，天然优先命中）
-  if (split.groups.length < 4) {
-    const edgeWidth = Math.max(56, Math.round(width * 0.09));
-    const left = createDropZone(
-      { x: 2, y: 2, width: edgeWidth, height: height - 4 },
-      "左侧新建窗格",
-      [],
-      true,
-    );
-    left.dataset.edge = "left";
-    const right = createDropZone(
-      { x: width - edgeWidth - 2, y: 2, width: edgeWidth, height: height - 4 },
-      "右侧新建窗格",
-      [],
-      true,
-    );
-    right.dataset.edge = "right";
-    dragOverlay.append(left, right);
-  }
 }
 
 function hideDragOverlay(): void {
   dragOverlay.hidden = true;
   dragOverlay.replaceChildren();
+  dropPreviewLayer.hidden = true;
+  dropPreviewLayer.replaceChildren();
+  dragPreview = null;
+  previewKey = "";
+  pendingPreview = null;
+  if (previewRaf) {
+    cancelAnimationFrame(previewRaf);
+    previewRaf = 0;
+  }
 }
 
 function startSplitDrag(): void {
@@ -336,15 +449,20 @@ function startSplitDrag(): void {
   splitDragging = true;
   renderDragOverlay(snapshot.split, snapshot);
   dragOverlay.hidden = false;
+  dropPreviewLayer.hidden = false;
   // 主进程临时隐藏所有内容视图，投放层才不会被 WebContentsView 盖住
   void window.piWebTabs.beginTabDrag();
 }
 
-function endSplitDrag(): void {
+/** 收尾；notifyMain=false 表示主进程 dropTab 会自己恢复视图，避免重复 / 竞态 */
+function endSplitDrag(notifyMain = true): void {
   if (!splitDragging) return;
   splitDragging = false;
+  dragId = null;
+  dropIndex = null;
+  clearHighlights();
   hideDragOverlay();
-  void window.piWebTabs.endTabDrag();
+  if (notifyMain) void window.piWebTabs.endTabDrag();
   render();
 }
 
@@ -611,8 +729,17 @@ function renderStatus(state: ServerState): void {
 
 async function main(): Promise<void> {
   bindDropTarget();
+  // 落在窗格间隙时也要允许拖放（否则会显示「禁止」光标）
+  dragOverlay.addEventListener("dragover", (event) => event.preventDefault());
   // 窗口失焦时鼠标很可能已在别处松开，统一收尾（主进程还有 mouseUp / 看门狗兜底）
-  window.addEventListener("blur", finishSashDrag);
+  window.addEventListener("blur", () => {
+    finishSashDrag();
+    if (splitDragging) endSplitDrag();
+  });
+  // Esc 取消拖放：预览从不改真实树，收尾即完全恢复原状态
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && splitDragging) endSplitDrag();
+  });
 
   newTabButton.addEventListener("click", () => void window.piWebTabs.open("/"));
   settingsButton.addEventListener("click", () => void window.piWebTabs.openSettings());

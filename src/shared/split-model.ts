@@ -311,6 +311,125 @@ export function directionForSide(side: EdgeSide): { direction: SplitDirection; p
   };
 }
 
+/* ----------------------------- M3：五方向投放（纯逻辑） ----------------------------- */
+
+export type DropSide = "center" | "left" | "right" | "top" | "bottom";
+
+export interface TabDropResult {
+  /** 假想拖放后的树；绝不改动入参 */
+  root: LayoutNode;
+  /** 页签最终落在哪个 Pane */
+  destinationPaneId: string;
+  /** 是否新建了窗格 */
+  createsPane: boolean;
+  /** 是否允许这次投放（4 窗格上限时边缘投放为 false） */
+  allowed: boolean;
+  /** 不允许 / 无变化时的人话原因 */
+  reason: string;
+  /** 实际生效的方向 */
+  effectiveSide: DropSide;
+  /** 源 Pane 只剩最后一个 Tab 的边缘投放：调用方需要补一个空白页签保住源 Pane */
+  placeholderPaneId: string | null;
+  changed: boolean;
+}
+
+function findPaneOfTab(root: LayoutNode, tabId: string): PaneNode | null {
+  return collectPanes(root).find((pane) => pane.tabIds.includes(tabId)) ?? null;
+}
+
+/** 只搬 Tab、不删空窗格。边缘投放要保留源 Pane 给占位页签，不能用会 prune 的 moveTab。 */
+function moveTabKeepEmpty(
+  work: LayoutNode,
+  tabId: string,
+  targetPaneId: string,
+  insertIndex?: number,
+): boolean {
+  const target = findPane(work, targetPaneId);
+  if (!target) return false;
+  let found = false;
+  for (const pane of collectPanes(work)) {
+    const at = pane.tabIds.indexOf(tabId);
+    if (at < 0) continue;
+    pane.tabIds.splice(at, 1);
+    if (pane.activeId === tabId) pane.activeId = pane.tabIds[0] ?? null;
+    found = true; // 全局去重：一个 Tab 只在一个 Pane 里
+  }
+  if (!found) return false;
+  const requested = Number.isFinite(insertIndex) ? Math.trunc(insertIndex as number) : target.tabIds.length;
+  const at = Math.min(Math.max(requested, 0), target.tabIds.length);
+  target.tabIds.splice(at, 0, tabId);
+  target.activeId = tabId;
+  return true;
+}
+
+/**
+ * VS Code 式五方向投放的**唯一**落位算法：预览和真正执行都调它，保证「看到的 = 得到的」。
+ *
+ *  - center：把 Tab 移到目标 Pane（moveTab 会在源 Pane 空时自动合并）；同 Pane 内只调顺序。
+ *  - left/right/top/bottom：在**目标 Pane 自己的区域内**按 directionForSide 拆出一个新 Pane，
+ *    再把 Tab 放进去（不关闭 / 不重建任何原有 Tab，Tab id 原样搬运）。
+ *  - 已达 MAX_PANES：边缘投放被拒绝（allowed=false），仍可拖到 center 合并。
+ *  - 源 Pane 只剩这一个 Tab 时边缘投放会让源 Pane 变空 → 返回 placeholderPaneId，
+ *    由 TabManager 先补一个空白页签再重算，保证窗格数确实 +1（与 M1 splitWithTab 行为一致）。
+ */
+export function applyTabDrop(
+  root: LayoutNode,
+  tabId: string,
+  targetPaneId: string,
+  side: DropSide,
+  insertIndex?: number,
+): TabDropResult {
+  const base: TabDropResult = {
+    root,
+    destinationPaneId: "",
+    createsPane: false,
+    allowed: false,
+    reason: "",
+    effectiveSide: side,
+    placeholderPaneId: null,
+    changed: false,
+  };
+  const source = findPaneOfTab(root, tabId);
+  const target = findPane(root, targetPaneId);
+  if (!source || !target) return { ...base, reason: "页签或目标窗格已不存在" };
+
+  if (side === "center") {
+    const result = moveTab(root, tabId, targetPaneId, insertIndex);
+    return {
+      ...base,
+      root: result.root,
+      allowed: result.changed,
+      changed: result.changed,
+      destinationPaneId: targetPaneId,
+      effectiveSide: "center",
+      reason: result.changed ? "" : "页签没有变化",
+    };
+  }
+
+  if (paneCount(root) >= MAX_PANES) {
+    return { ...base, allowed: false, reason: "最多 4 个窗格，只能拖到中心合并" };
+  }
+
+  const { direction, placement } = directionForSide(side);
+  const split = splitPane(root, targetPaneId, direction, placement);
+  if (!split.changed) return { ...base, reason: "无法在此处新建窗格" };
+
+  const placeholderPaneId = source.tabIds.length === 1 ? source.id : null;
+  if (!moveTabKeepEmpty(split.root, tabId, split.newPaneId)) {
+    return { ...base, reason: "页签移动失败" };
+  }
+  return {
+    ...base,
+    root: split.root,
+    destinationPaneId: split.newPaneId,
+    createsPane: true,
+    allowed: true,
+    changed: true,
+    effectiveSide: side,
+    placeholderPaneId,
+  };
+}
+
 export interface RemoveResult {
   root: LayoutNode;
   /** 被删窗格的页签合并进了哪个窗格 */

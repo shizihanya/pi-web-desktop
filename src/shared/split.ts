@@ -34,6 +34,9 @@ export type {
   SashRect,
   PersistedLayout,
   PersistedLayoutNode,
+  DropSide,
+  PaneLayout,
+  TabDropResult,
 } from "./split-model.ts";
 
 export interface PaneRect {

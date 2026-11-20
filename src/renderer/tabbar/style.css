@@ -531,7 +531,7 @@ body {
   cursor: row-resize;
 }
 
-/* ---------------- 拖动页签时的投放区 ---------------- */
+/* ---------------- 拖动页签：五方向投放区 + 布局预览（M3） ---------------- */
 
 .drag-overlay {
   position: fixed;
@@ -541,26 +541,57 @@ body {
   pointer-events: auto;
 }
 
+/* 一个窗格 = 一个 zone；内部五块互不重叠的 region，命中判定与视觉用同一套坐标 */
 .drop-zone {
+  position: absolute;
+  pointer-events: auto;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.drop-region {
   position: absolute;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  border: 2px dashed var(--border);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--bg-hover) 60%, transparent);
-  color: var(--text-muted);
-  font-size: 12px;
-  text-align: center;
+  gap: 6px;
+  border: 1px dashed var(--border);
+  background: color-mix(in srgb, var(--bg-hover) 45%, transparent);
+  pointer-events: none; /* 事件统一交给 .drop-zone，避免子元素抢 drop */
   overflow: hidden;
+  transition: background 0.1s ease, border-color 0.1s ease, color 0.1s ease;
 }
 
-.drop-zone.is-over {
+.drop-region.is-center {
+  border-radius: 6px;
+  border-width: 2px;
+  background: color-mix(in srgb, var(--bg-selected) 55%, transparent);
+}
+
+.drop-region.is-over {
   border-color: var(--accent);
-  background: color-mix(in srgb, var(--bg-selected) 80%, transparent);
+  border-style: solid;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
   color: var(--text);
+}
+
+.drop-region.is-disabled {
+  opacity: 0.38;
+}
+
+.drop-region-label {
+  pointer-events: none;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.drop-region.is-left .drop-region-label,
+.drop-region.is-right .drop-region-label {
+  max-width: 88px;
+  white-space: normal;
+  line-height: 1.4;
 }
 
 .drop-zone-title,
@@ -589,15 +620,59 @@ body {
   opacity: 0.8;
 }
 
-.drop-edge {
-  border-style: solid;
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--bg-selected) 55%, transparent);
+/* 预览层：只画、不拦事件，盖在投放区之上 */
+.drop-preview {
+  position: fixed;
+  inset: 0;
+  z-index: 25;
+  pointer-events: none;
 }
 
-.drop-edge .drop-zone-title {
-  writing-mode: vertical-rl;
-  letter-spacing: 2px;
+.drop-preview-pane {
+  position: absolute;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--bg) 18%, transparent);
+  border-radius: 4px;
+  transition: left 0.09s ease, top 0.09s ease, width 0.09s ease, height 0.09s ease;
+}
+
+.drop-preview-pane.is-destination {
+  border: 2px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.drop-preview-label {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 3px 9px;
+  border-radius: 4px;
+  background: var(--accent);
+  color: var(--accent-contrast, #fff);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.drop-reason {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  padding: 5px 12px;
+  border-radius: 5px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  max-width: 80%;
+  text-align: center;
+}
+
+.drop-reason.is-warning {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* 滑块圆点用页签栏底色遮住横线；--bg 由 tabbar.ts 按 pi-web 主题写入 :root */

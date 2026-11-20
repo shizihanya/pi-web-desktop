@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { DRAFT_IPC, IPC, TAB_IPC } from "../shared/types";
 import type { DraftWorkspace } from "./tabs/draft-workspace";
 import type { SplitPreset } from "../shared/split";
+import type { DropSide } from "../shared/split-model";
+import type { DropPreview } from "../shared/types";
 import type { ServerManager } from "./server/server-manager";
 import type { TabManager } from "./tabs/tab-manager";
 import { dataDir, logFilePath } from "./settings";
@@ -170,6 +172,41 @@ export function registerTabIpc(
     ),
   );
   ipcMain.handle(TAB_IPC.endSashDrag, () => withTabs((tabs) => tabs.endSashDrag()));
+  /* ---- 五方向拖拽（M3）---- */
+  const dropSides: DropSide[] = ["center", "left", "right", "top", "bottom"];
+  const cleanSide = (side: unknown): DropSide =>
+    dropSides.includes(side as DropSide) ? (side as DropSide) : "center";
+  const emptyPreview: DropPreview = {
+    allowed: false,
+    reason: "页签尚未就绪",
+    side: "center",
+    targetPaneId: "",
+    destinationPaneId: "",
+    createsPane: false,
+    paneCount: 0,
+    panes: [],
+    sashes: [],
+  };
+  ipcMain.handle(TAB_IPC.previewTabDrop, (_event, id: string, targetPaneId: string, side: DropSide, insertIndex?: number) =>
+    withTabs((tabs) =>
+      tabs.previewTabDrop(
+        String(id ?? ""),
+        String(targetPaneId ?? ""),
+        cleanSide(side),
+        typeof insertIndex === "number" && Number.isFinite(insertIndex) ? insertIndex : undefined,
+      ),
+    ) ?? emptyPreview,
+  );
+  ipcMain.handle(TAB_IPC.dropTab, (_event, id: string, targetPaneId: string, side: DropSide, insertIndex?: number) =>
+    withTabs((tabs) =>
+      tabs.dropTab(
+        String(id ?? ""),
+        String(targetPaneId ?? ""),
+        cleanSide(side),
+        typeof insertIndex === "number" && Number.isFinite(insertIndex) ? insertIndex : undefined,
+      ),
+    ),
+  );
   ipcMain.handle(TAB_IPC.showSplitMenu, (_event, x: number, y: number) =>
     withTabs((tabs) => tabs.showSplitMenu(x, y)),
   );

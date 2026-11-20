@@ -20,6 +20,7 @@ import {
   MIN_PANE_WIDTH,
   MIN_PANE_HEIGHT,
   addEdgePane,
+  applyTabDrop,
   canSplit,
   clampRatioForBounds,
   cloneTree,
@@ -496,6 +497,114 @@ function safeTiny(root) {
   }
 }
 
+/* ------------------------- 五方向投放（M3 纯逻辑） ------------------------- */
+{
+  const root = createSplit(
+    "horizontal",
+    createPane(["a", "b"], "a"),
+    createPane(["c"], "c"),
+    0.5,
+  );
+  const [p0, p1] = collectPanes(root);
+  const b = bounds();
+
+  /* center：只移动、不新建 */
+  {
+    const r = applyTabDrop(root, "a", p1.id, "center", 0);
+    check("center：跨 Pane 移动不新建窗格", r.allowed && r.changed && !r.createsPane && r.effectiveSide === "center" && paneCount(r.root) === 2);
+    eq("center：按 insertIndex 插入并成为活动页签", collectPanes(r.root)[1].tabIds, ["a", "c"]);
+    check("center：活动页签指向被拖的 Tab", collectPanes(r.root)[1].activeId === "a");
+    eq("center：Tab id 原样搬运、全局不重复", sortedIds(allTabIds(r.root)), "a,b,c");
+    check("center：目标 Pane 就是 destinationPaneId", r.destinationPaneId === p1.id);
+  }
+  {
+    const r = applyTabDrop(root, "c", p0.id, "center");
+    check("center：移走最后一个 Tab 时源 Pane 自动合并", paneCount(r.root) === 1 && r.allowed);
+    eq("center：合并后所有 Tab 仍在", sortedIds(allTabIds(r.root)), "a,b,c");
+  }
+  {
+    const r = applyTabDrop(root, "b", p0.id, "center", 0);
+    check("同一 Pane 内拖到 center 只调页签顺序", r.allowed && !r.createsPane && paneCount(r.root) === 2);
+    eq("同一 Pane 内顺序变化且不重复", collectPanes(r.root)[0].tabIds, ["b", "a"]);
+  }
+  check("无效 Tab / 目标 Pane 被拒绝且不动树", applyTabDrop(root, "nope", p1.id, "center").root === root && applyTabDrop(root, "a", "nope", "left").allowed === false);
+
+  /* 四个边缘：在目标 Pane 自己的区域内拆 */
+  const expected = [
+    ["left", "horizontal", 0],
+    ["right", "horizontal", 1],
+    ["top", "vertical", 0],
+    ["bottom", "vertical", 1],
+  ];
+  for (const [side, direction, childIndex] of expected) {
+    const r = applyTabDrop(root, "b", p1.id, side);
+    check(`${side}：新建 1 个 Pane、Tab 落在里面且不丢`, r.allowed && r.changed && r.createsPane && paneCount(r.root) === 3 && r.placeholderPaneId === null && sortedIds(allTabIds(r.root)) === "a,b,c");
+    check(`${side}：方向 / 前后位置正确`, (() => {
+      const inner = collectSplits(r.root).find((s) => s.direction === direction && s.children[childIndex].id === r.destinationPaneId);
+      return Boolean(inner) && findPane(r.root, r.destinationPaneId)?.tabIds.join("") === "b" && findPane(r.root, r.destinationPaneId)?.activeId === "b";
+    })());
+    check(`${side}：预览布局合法`, validRects(r.root, b));
+  }
+  check("上下方向投放后成为混合嵌套布局", layoutKind(applyTabDrop(root, "b", p1.id, "top").root) === "grid");
+  check("applyTabDrop 是纯函数：原树完全不变", layoutSignature(applyTabDrop(root, "b", p1.id, "left").root) !== layoutSignature(root) && layoutSignature(root).startsWith("s:") && p0.tabIds.join("") === "ab");
+
+  /* 源 Pane 只剩 1 个 Tab：返回占位提示，补位后树合法 */
+  {
+    const r = applyTabDrop(root, "c", p0.id, "right");
+    check("源 Pane 只剩最后一个 Tab 时返回 placeholderPaneId", r.allowed && r.placeholderPaneId === p1.id);
+    const withPlaceholder = cloneTree(root);
+    findPane(withPlaceholder, p1.id).tabIds.push("new");
+    const final = applyTabDrop(withPlaceholder, "c", p0.id, "right");
+    check("补位后不再需要占位、窗格数确实 +1", final.allowed && final.placeholderPaneId === null && paneCount(final.root) === 3);
+    eq("补位后所有 Tab（含新占位）都在", sortedIds(allTabIds(final.root)), "a,b,c,new");
+  }
+
+  /* 4 窗格上限：边缘禁止、center 仍允许 */
+  {
+    const four = createSplit(
+      "horizontal",
+      createSplit("horizontal", createPane(["a"], "a"), createPane(["b"], "b"), 0.5),
+      createSplit("horizontal", createPane(["c"], "c"), createPane(["d"], "d"), 0.5),
+      0.5,
+    );
+    const target = collectPanes(four)[0].id;
+    const denied = applyTabDrop(four, "d", target, "left");
+    check("已达 4 窗格：边缘投放被拒绝且树不变", !denied.allowed && !denied.changed && denied.root === four && denied.reason.includes("4"));
+    const merged = applyTabDrop(four, "d", target, "center");
+    check("已达 4 窗格：center 仍可合并", merged.allowed && !merged.createsPane && sortedIds(allTabIds(merged.root)) === "a,b,c,d");
+  }
+
+  /* 嵌套 Pane 可以继续拆，直到上限 */
+  {
+    let tree = createSplit("horizontal", createPane(["a", "x"], "a"), createPane(["b", "y"], "b"), 0.5);
+    const r1 = applyTabDrop(tree, "a", collectPanes(tree)[1].id, "right");
+    tree = r1.root;
+    check("嵌套 Pane 可继续拆分（2 → 3）", r1.allowed && paneCount(tree) === 3);
+    const r2 = applyTabDrop(tree, "x", r1.destinationPaneId, "right");
+    tree = r2.root;
+    check("嵌套 Pane 可继续拆分（3 → 4）", r2.allowed && paneCount(tree) === 4);
+    const r3 = applyTabDrop(tree, "y", r2.destinationPaneId, "right");
+    check("第 5 个 Pane 被拒绝", !r3.allowed && r3.root === tree);
+  }
+
+  /* 预览与落位同源：同一输入两次调用，结构（不含随机 id）完全一致 */
+  {
+    const a = applyTabDrop(root, "a", p1.id, "left");
+    const c = applyTabDrop(root, "a", p1.id, "left");
+    eq("预览 / 落位的页签归属一致", collectPanes(a.root).map((p) => p.tabIds), collectPanes(c.root).map((p) => p.tabIds));
+    eq("预览 / 落位的方向与比例一致", collectSplits(a.root).map((s) => [s.direction, s.ratio]), collectSplits(c.root).map((s) => [s.direction, s.ratio]));
+    eq("预览 / 落位的窗格矩形一致", computeLayoutRects(a.root, b).panes.map((p) => rect(p.rect)), computeLayoutRects(c.root, b).panes.map((p) => rect(p.rect)));
+  }
+
+  /* 拖放取消：预览不改真实树 */
+  {
+    const before = layoutSignature(root);
+    const tabsBefore = JSON.stringify(collectPanes(root).map((p) => p.tabIds));
+    for (const side of ["center", "left", "right", "top", "bottom"]) applyTabDrop(root, "a", p1.id, side);
+    check("取消（只预览不赋值）后布局树与页签完全恢复", layoutSignature(root) === before && JSON.stringify(collectPanes(root).map((p) => p.tabIds)) === tabsBefore);
+  }
+}
+
 /* ------------------------- 静态契约：TabManager 接线 ------------------------- */
 {
   const manager = readFileSync(new URL("../src/main/tabs/tab-manager.ts", import.meta.url), "utf8");
@@ -525,7 +634,7 @@ function safeTiny(root) {
   const ipc = readFileSync(new URL("../src/main/ipc.ts", import.meta.url), "utf8");
   check("renderer 用 Pointer Events + pointer capture", ["pointerdown", "setPointerCapture", "pointerup", "pointercancel", "lostpointercapture", "releasePointerCapture"].every((n) => tabbar.includes(n)));
   check("拖动用 requestAnimationFrame 合并 IPC", tabbar.includes("requestAnimationFrame") && tabbar.includes("cancelAnimationFrame"));
-  check("结束信号覆盖窗口失焦", tabbar.includes('addEventListener("blur", finishSashDrag)'));
+  check("结束信号覆盖窗口失焦", tabbar.includes('addEventListener("blur"') && tabbar.includes("finishSashDrag()"));
   check("分隔条 DOM 按 id 复用，不整层重建", tabbar.includes("const sashEls = new Map") && !tabbar.includes("sashLayer.replaceChildren()"));
   check("拖动中只增量更新页签条位置", tabbar.includes("if (sashDragging && splitMode)"));
   check("CSS 有对应方向的调整光标与细线", css.includes("col-resize") && css.includes("row-resize") && css.includes(".sash::after"));
@@ -537,6 +646,26 @@ function safeTiny(root) {
   check("跨进程晚到的旧 pointermove 被丢弃（防 ratio 回跳）", manager.includes("stamp < this.lastSashAt - 2"));
   check("layout() 只切变化的可见性（拖动零闪烁）", manager.includes("if (was !== should) tab.view.setVisible(should)"));
   check("三处 IPC 通道声明一致", [types, preload, ipc].every((f) => ["beginSashDrag", "setSashRatio", "endSashDrag"].every((n) => f.includes(n))));
+
+  /* ---- M3：五方向拖拽接线 ---- */
+  const model = readFileSync(new URL("../src/shared/split-model.ts", import.meta.url), "utf8");
+  check("五方向落位是纯数据模型里的唯一算法", model.includes("export function applyTabDrop(") && model.includes("export type DropSide"));
+  check("预览与落位共用同一个 applyTabDrop", (manager.match(/applyTabDrop\(/g) ?? []).length >= 3 && !manager.includes("private previewTabDrop"));
+  check("主进程负责预览布局计算（单一数据源）", manager.includes("computeLayoutRects(result.root"));
+  check("落位不重建 / 不重载 / 不关闭页签", (() => {
+    const start = manager.indexOf("dropTab(id: string");
+    const end = manager.indexOf("\n  showSplitMenu(", start);
+    const body = start >= 0 && end > start ? manager.slice(start, end) : "";
+    return body.length > 0 && !/(disposeTab|loadURL|removeChildView|new WebContentsView)\(/.test(body);
+  })());
+  check("三处 M3 IPC 通道声明一致", [types, preload, ipc].every((f) => ["previewTabDrop", "dropTab"].every((n) => f.includes(n))));
+  check("renderer 画五方向区域并用同一套坐标做命中", ["dropRegions", "sideForPoint", '"left"', '"right"', '"top"', '"bottom"', '"center"'].every((n) => tabbar.includes(n)));
+  check("renderer 只画主进程给的预览矩形", tabbar.includes("renderDropPreview") && tabbar.includes("previewTabDrop") && !tabbar.includes("computeLayoutRects"));
+  check("预览 IPC 用 rAF 合并 + 签名去重 + 丢弃过期结果", tabbar.includes("previewKey") && tabbar.includes("requestAnimationFrame") && tabbar.includes("previewKey !== req.key"));
+  check("取消恢复：Esc / 窗口失焦 / dragend 都收尾", tabbar.includes('event.key === "Escape"') && tabbar.includes("if (splitDragging) endSplitDrag()"));
+  check("4 窗格上限在 renderer 侧也禁用边缘区", tabbar.includes("atLimit") && tabbar.includes("is-disabled"));
+  check("投放层有独立预览层且不拦事件", html.includes('id="drop-preview"') && css.includes("pointer-events: none") && css.includes(".drop-preview-pane"));
+  check("拖页签有崩溃兜底看门狗", manager.includes("tabDragWatchdog") && manager.includes("stopTabDragWatchdog"));
 }
 
 /* ------------------------- 单一数据源 ------------------------- */
