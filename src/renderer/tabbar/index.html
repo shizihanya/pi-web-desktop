@@ -10,73 +10,85 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <!-- 单栏：完全保持原来的页签栏；分屏时整条隐藏 -->
+    <!-- 单栏：顶部单行工具条 + 页签栏；分屏时整条隐藏 -->
     <div class="tabbar" id="tabbar">
       <div class="tabs" id="tabs"></div>
       <div class="drag-strip" id="drag-strip"></div>
       <div class="window-tools" id="window-tools">
-        <button
-          class="split-button"
-          id="split-button"
-          title="分屏 (Ctrl+\) · 拖动页签可放到任意一侧"
-          aria-label="分屏"
-          type="button"
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <rect
-              x="2"
-              y="3"
-              width="12"
-              height="10"
-              rx="1.6"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.3"
-            />
-            <path d="M8 3v10" stroke="currentColor" stroke-width="1.3" />
-          </svg>
-        </button>
-        <button
-          class="draft-toggle"
-          id="draft-toggle"
-          title="独立输入工作区（右侧编辑长文本）"
-          aria-label="独立输入工作区"
-          type="button"
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <rect x="2" y="2.5" width="12" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
-            <path d="M5 6h6M5 9h6M5 12h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
-          </svg>
-        </button>
-        <button class="new-tab" id="new-tab" title="新页签 (Ctrl+T)" type="button">
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-          </svg>
-        </button>
-        <button
-          class="settings-button"
-          id="open-settings"
-          title="Pi Web Desktop 设置…"
-          aria-label="Pi Web Desktop 设置"
-          type="button"
-        >
-          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-            <path
-              d="M2 4.5h12M2 8h12M2 11.5h12"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.3"
-              stroke-linecap="round"
-            />
-            <circle cx="6" cy="4.5" r="1.7" stroke="currentColor" stroke-width="1.3" />
-            <circle cx="10.5" cy="8" r="1.7" stroke="currentColor" stroke-width="1.3" />
-            <circle cx="5.5" cy="11.5" r="1.7" stroke="currentColor" stroke-width="1.3" />
-          </svg>
-        </button>
-        <div class="status" id="status" title="服务状态">
-          <span class="dot" id="status-dot"></span>
-          <span id="status-text">…</span>
+        <div class="tool-actions">
+          <button
+            class="tool-button split-button"
+            id="split-button"
+            title="分屏 (Ctrl+\) · 拖动页签可放到任意一侧"
+            aria-label="分屏"
+            type="button"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <rect
+                x="2"
+                y="3"
+                width="12"
+                height="10"
+                rx="1.6"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+              />
+              <path d="M8 3v10" stroke="currentColor" stroke-width="1.3" />
+            </svg>
+          </button>
+          <button
+            class="tool-button draft-toggle"
+            id="draft-toggle"
+            title="独立输入工作区（右侧编辑长文本）"
+            aria-label="独立输入工作区"
+            type="button"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <rect x="2" y="2.5" width="12" height="11" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.3" />
+              <path d="M5 6h6M5 9h6M5 12h3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button
+            class="tool-button new-tab"
+            id="new-tab"
+            title="新页签 (Ctrl+T)"
+            aria-label="新页签"
+            type="button"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button
+            class="tool-button settings-button"
+            id="open-settings"
+            title="Pi Web Desktop 设置…"
+            aria-label="Pi Web Desktop 设置"
+            type="button"
+          >
+            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+              <path
+                d="M2 4.5h12M2 8h12M2 11.5h12"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+              <circle cx="6" cy="4.5" r="1.7" stroke="currentColor" stroke-width="1.3" />
+              <circle cx="10.5" cy="8" r="1.7" stroke="currentColor" stroke-width="1.3" />
+              <circle cx="5.5" cy="11.5" r="1.7" stroke="currentColor" stroke-width="1.3" />
+            </svg>
+          </button>
         </div>
+        <div class="status" id="status" title="服务状态" role="status">
+          <span class="dot" id="status-dot"></span>
+          <span class="status-port" id="status-text">…</span>
+          <span class="status-extra" id="status-extra"></span>
+        </div>
+        <!-- Windows 自绘标题栏：这块留白是 WCO 原生窗口控件的安全区，
+             不承载任何交互（最小化 / 最大化·还原 / 关闭由系统绘制）。 -->
+        <div class="window-controls" aria-hidden="true"></div>
       </div>
     </div>
 

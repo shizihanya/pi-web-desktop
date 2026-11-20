@@ -449,7 +449,7 @@ async function showMainWindow(baseUrl: string): Promise<void> {
       const probe =
         "(() => { const o = navigator.windowControlsOverlay; const r = o && o.getTitlebarAreaRect ? o.getTitlebarAreaRect() : null; " +
         "return JSON.stringify({ wco: !!o, rect: r ? { x: r.x, y: r.y, width: r.width, height: r.height } : null, " +
-        "paddingRight: getComputedStyle(document.querySelector('.tabbar')).paddingRight, " +
+        "wcoSafeWidth: getComputedStyle(document.querySelector('.window-controls')).width, " +
         "scheme: document.documentElement.dataset.scheme, theme: document.documentElement.dataset.theme }); })()";
       void win.webContents
         .executeJavaScript(probe)

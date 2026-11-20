@@ -25,8 +25,10 @@ const dropPreviewLayer = document.getElementById("drop-preview") as HTMLDivEleme
 const newTabButton = document.getElementById("new-tab") as HTMLButtonElement;
 const settingsButton = document.getElementById("open-settings") as HTMLButtonElement;
 const splitButton = document.getElementById("split-button") as HTMLButtonElement;
+const status = document.getElementById("status") as HTMLDivElement;
 const statusDot = document.getElementById("status-dot") as HTMLSpanElement;
 const statusText = document.getElementById("status-text") as HTMLSpanElement;
+const statusExtra = document.getElementById("status-extra") as HTMLSpanElement;
 
 let snapshot: TabsSnapshot | null = null;
 /** 正在拖动的页签 id */
@@ -62,13 +64,6 @@ const STATUS_LABEL: Record<TabStatus, string> = {
   running: "正在等待回答…",
   unread: "回答完毕，尚未查看",
   awaiting: "等待你的确认",
-};
-
-const STATUS_SUFFIX: Record<TabStatus, string> = {
-  idle: "",
-  running: " · 正在等待回答…",
-  unread: " · 回答完毕，尚未查看",
-  awaiting: " · 等待你的确认",
 };
 
 function isSplit(): boolean {
@@ -135,7 +130,9 @@ function createTabElement(tab: TabInfo, active: boolean, index: number): HTMLEle
   el.dataset.id = tab.id;
   el.dataset.index = String(index);
   el.draggable = true;
-  el.title = (tab.title || "新页签") + STATUS_SUFFIX[tab.status];
+  // 原生 Tooltip 展示完整标题；状态另起一行，不与项目/会话名称混在一起
+  const fullTitle = tab.title || "新页签";
+  el.title = STATUS_LABEL[tab.status] ? `${fullTitle}\n${STATUS_LABEL[tab.status]}` : fullTitle;
 
   el.append(createIcon(tab));
 
@@ -165,6 +162,8 @@ function createTabElement(tab: TabInfo, active: boolean, index: number): HTMLEle
   close.className = "tab-close";
   close.textContent = "×";
   close.title = "关闭页签 (Ctrl+W)";
+  close.setAttribute("role", "button");
+  close.setAttribute("aria-label", "关闭页签 (Ctrl+W)");
   close.addEventListener("click", (event) => {
     event.stopPropagation();
     void window.piWebTabs.close(tab.id);
@@ -600,10 +599,14 @@ function renderPaneTabBars(split: SplitSnapshot, current: TabsSnapshot): void {
     bar.append(strip);
 
     const add = document.createElement("button");
-    add.className = "new-tab pane-new-tab";
+    add.className = "tool-button new-tab pane-new-tab";
     add.type = "button";
     add.title = "在此窗格新建页签";
-    add.textContent = "+";
+    add.setAttribute("aria-label", "在此窗格新建页签");
+    add.innerHTML =
+      '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">' +
+      '<path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />' +
+      "</svg>";
     add.addEventListener("click", () => void window.piWebTabs.newTabInGroup(index));
     bar.append(add);
 
@@ -713,17 +716,26 @@ function bindDropTarget(): void {
 }
 
 function renderStatus(state: ServerState): void {
+  // 运行 / 复用 / 异常 / 启动中四种相位各有独立视觉反馈，数据仍来自 ServerState
   statusDot.className = "dot";
   if (state.phase === "ready") statusDot.classList.add(state.managed ? "ok" : "warn");
   else if (state.phase === "failed") statusDot.classList.add("err");
+  else statusDot.classList.add("pending");
+  status.dataset.phase = state.phase;
 
-  const bits: string[] = [];
-  if (state.port) bits.push(String(state.port));
-  if (state.version) bits.push(`v${state.version}`);
-  if (state.phase === "ready" && !state.managed) bits.push("复用");
-  if (state.phase === "failed") bits.push("启动失败");
-  statusText.textContent = bits.join(" · ") || "…";
-  statusText.parentElement?.setAttribute(
+  // 端口是主信息；版本 / 复用 / 失败原因弱化为次要信息
+  const extras: string[] = [];
+  if (state.version) extras.push(`v${state.version}`);
+  if (state.phase === "ready" && !state.managed) extras.push("复用");
+  if (state.phase === "failed") extras.push("启动失败");
+  statusText.textContent = state.port
+    ? String(state.port)
+    : state.phase === "failed"
+      ? "服务异常"
+      : "…";
+  statusExtra.textContent = extras.length ? ` · ${extras.join(" · ")}` : "";
+
+  status.setAttribute(
     "title",
     state.phase === "ready"
       ? `${state.url ?? ""}${state.managed ? "" : "（复用已在运行的实例）"}`
