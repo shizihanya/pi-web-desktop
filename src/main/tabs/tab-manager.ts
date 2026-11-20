@@ -26,9 +26,12 @@ import {
 import {
   addEdgePane,
   applyTabDrop,
+  canAddEdge,
+  canSplit,
   collectPanes,
   computeLayoutRects,
   createPane,
+  directionForSide,
   type DropSide,
   findPane,
   findSplit,
@@ -42,6 +45,7 @@ import {
   presetToTree,
   ratioFromPointer,
   removePane,
+  type Rect,
   setRatio,
   splitPane,
   type LayoutNode,
@@ -196,9 +200,30 @@ export class TabManager {
     this.focusedPaneId = panes[at]?.id ?? "";
   }
 
+  /** 当前窗口内容区矩形：布局计算、最小尺寸检查、拖放预览与落位全部用同一份 bounds */
+  private layoutBounds(): Rect {
+    const [width, height] = this.options.win.isDestroyed() ? [1, 1] : this.options.win.getContentSize();
+    return { x: 0, y: 0, width, height };
+  }
+
+  /** 每个窗格当前实际允许投放的方向（主进程用 canSplit 算，渲染层只显示） */
+  private dropSides(): DropSide[][] {
+    const bounds = this.layoutBounds();
+    const atLimit = paneCount(this.root) >= MAX_PANES;
+    return this.groups.map((pane) => {
+      const sides: DropSide[] = ["center"];
+      if (!atLimit) {
+        for (const side of ["left", "right", "top", "bottom"] as const) {
+          if (canSplit(this.root, bounds, pane.id, directionForSide(side).direction)) sides.push(side);
+        }
+      }
+      return sides;
+    });
+  }
+
   /** 布局计算（带缓存）：几何签名 / 窗口尺寸没变就复用上次结果 */
   private syncLayout(): LayoutResult {
-    const [width, height] = this.options.win.isDestroyed() ? [1, 1] : this.options.win.getContentSize();
+    const { width, height } = this.layoutBounds();
     const signature = layoutSignature(this.root);
     if (
       !this.computed ||
@@ -473,6 +498,7 @@ export class TabManager {
         focusedPaneId: this.focusedPaneId,
         tree: this.root,
         sashes: layout.sashes,
+        dropSides: this.dropSides(),
       },
     };
   }
@@ -740,11 +766,19 @@ export class TabManager {
       this.moveTabToGroup(target, (srcIndex + 1) % this.groups.length);
       return;
     }
+    const direction: SplitDirection = orientation === "rows" ? "vertical" : "horizontal";
+    // 最小尺寸硬约束：按源 Pane 当前实际矩形判断能否继续拆（与五方向投放共用 canSplit）
+    if (!canSplit(this.root, this.layoutBounds(), src.id, direction)) {
+      this.options.onDebug?.(
+        `[split] 窗口太小，${orientation} 方向继续拆分会让窗格小于最小尺寸，改为移动页签`,
+      );
+      this.moveTabToGroup(target, (srcIndex + 1) % this.groups.length);
+      return;
+    }
     // 源窗格只剩这一个页签时补一个新的，避免出现空窗格（原有 Tab 不关闭、不重载）
     if (src.tabIds.length === 1) {
       this.createTab("/", { activate: false, group: srcIndex });
     }
-    const direction: SplitDirection = orientation === "rows" ? "vertical" : "horizontal";
     // 在目标 Pane 自己的区域内拆：这样才表达得出「左一右二」这类不同方向的嵌套布局
     const result = splitPane(this.root, src.id, direction, "after");
     if (!result.changed) return;
@@ -832,6 +866,12 @@ export class TabManager {
     if (this.destroyed) return;
     this.dragging = false;
     if (this.groups.length >= MAX_PANES) {
+      this.moveTabToGroup(id, side === "left" ? 0 : this.groups.length - 1);
+      return;
+    }
+    // 在整棵树外面套一层前，同样按当前窗口尺寸检查最小尺寸
+    if (!canAddEdge(this.root, this.layoutBounds(), side)) {
+      this.options.onDebug?.("[split] 窗口太小，无法在窗口边缘新建窗格，改为移动页签");
       this.moveTabToGroup(id, side === "left" ? 0 : this.groups.length - 1);
       return;
     }
@@ -959,16 +999,16 @@ export class TabManager {
   /* ------------------------- 五方向拖拽（M3） ------------------------- */
 
   /** 预览：用与落位**同一个** applyTabDrop 算出「假想拖放后的树」，再递归算一次布局。
-   *  绝不改动 this.root，所以拖放取消天然恢复原状；位置仍由主进程唯一计算。 */
+   *  绝不改动 this.root，所以拖放取消天然恢复原状；位置与最小尺寸约束仍由主进程唯一计算。 */
   previewTabDrop(
     id: string,
     targetPaneId: string,
     side: DropSide,
     insertIndex?: number,
   ): DropPreview {
-    const [width, height] = this.options.win.isDestroyed() ? [1, 1] : this.options.win.getContentSize();
-    const result = applyTabDrop(this.root, id, targetPaneId, side, insertIndex);
-    const layout = computeLayoutRects(result.root, { x: 0, y: 0, width, height });
+    const bounds = this.layoutBounds();
+    const result = applyTabDrop(this.root, id, targetPaneId, side, bounds, insertIndex);
+    const layout = computeLayoutRects(result.root, bounds);
     return {
       allowed: result.allowed,
       reason: result.reason,
@@ -985,7 +1025,8 @@ export class TabManager {
   /** 落位：与预览共用同一个纯函数，保证「预览看到的 = 真正得到的」 */
   dropTab(id: string, targetPaneId: string, side: DropSide, insertIndex?: number): void {
     if (this.destroyed) return;
-    const probe = applyTabDrop(this.root, id, targetPaneId, side, insertIndex);
+    const bounds = this.layoutBounds();
+    const probe = applyTabDrop(this.root, id, targetPaneId, side, bounds, insertIndex);
     if (!probe.allowed || !probe.changed) {
       this.endTabDrag();
       return;
@@ -996,7 +1037,7 @@ export class TabManager {
       const index = this.groups.findIndex((pane) => pane.id === probe.placeholderPaneId);
       if (index >= 0) this.createTab("/", { activate: false, group: index });
     }
-    const final = applyTabDrop(this.root, id, targetPaneId, side, insertIndex);
+    const final = applyTabDrop(this.root, id, targetPaneId, side, bounds, insertIndex);
     if (!final.allowed || !final.changed) {
       this.endTabDrag();
       return;

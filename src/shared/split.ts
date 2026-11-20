@@ -12,6 +12,7 @@ import {
   MAX_PANES,
   PANE_GAP,
   TABBAR_HEIGHT,
+  type DropSide,
   type LayoutNode,
   type SashRect,
 } from "./split-model.ts";
@@ -190,4 +191,8 @@ export interface SplitSnapshot {
   tree: LayoutNode;
   /** 每个 SplitNode 一条分隔条，M2 起由渲染层画出来 */
   sashes: SashRect[];
+  /** 与 groups 同序：主进程按当前窗口尺寸 + canSplit() 算好的可用投放方向。
+   *  center 恒可用；边缘方向受 4 窗格上限与最小尺寸双重约束。
+   *  渲染层只显示，不自己计算，避免「看起来能拆、实际拆不了」。 */
+  dropSides: DropSide[][];
 }

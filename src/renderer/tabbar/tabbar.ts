@@ -7,7 +7,6 @@ import type {
   ThemeSnapshot,
 } from "../../shared/types";
 import {
-  MAX_PANES,
   topRightPaneIndex,
   type DropSide,
   type PaneRect,
@@ -353,7 +352,7 @@ function createDropZone(
   paneId: string,
   title: string,
   ghosts: string[],
-  atLimit: boolean,
+  allowedSides: DropSide[],
 ): HTMLElement {
   const zone = document.createElement("div");
   zone.className = "drop-zone";
@@ -371,11 +370,17 @@ function createDropZone(
     el.style.top = `${region.y - rect.y}px`;
     el.style.width = `${region.width}px`;
     el.style.height = `${region.height}px`;
-    if (region.side !== "center" && atLimit) el.classList.add("is-disabled");
+    const disabled = !allowedSides.includes(region.side);
+    if (disabled) el.classList.add("is-disabled");
 
     const label = document.createElement("span");
     label.className = "drop-region-label";
-    label.textContent = region.side === "center" ? title : REGION_LABEL[region.side];
+    label.textContent =
+      disabled && region.side !== "center"
+        ? `${REGION_LABEL[region.side]}（空间不足或已达 4 格）`
+        : region.side === "center"
+          ? title
+          : REGION_LABEL[region.side];
     el.append(label);
 
     if (region.side === "center" && ghosts.length > 0) {
@@ -417,14 +422,13 @@ function createDropZone(
 
 function renderDragOverlay(split: SplitSnapshot, current: TabsSnapshot): void {
   dragOverlay.replaceChildren();
-  const atLimit = split.groups.length >= MAX_PANES;
   split.groups.forEach((group, index) => {
     const zone = createDropZone(
       split.rects[index],
       split.paneIds[index],
       `窗格 ${index + 1} · 放到这里（合并页签）`,
       group.tabIds.map((id) => current.tabs.find((tab) => tab.id === id)?.title || "新页签"),
-      atLimit,
+      split.dropSides[index] ?? ["center"],
     );
     dragOverlay.append(zone);
   });

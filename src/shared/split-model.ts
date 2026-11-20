@@ -369,6 +369,9 @@ function moveTabKeepEmpty(
  *  - left/right/top/bottom：在**目标 Pane 自己的区域内**按 directionForSide 拆出一个新 Pane，
  *    再把 Tab 放进去（不关闭 / 不重建任何原有 Tab，Tab id 原样搬运）。
  *  - 已达 MAX_PANES：边缘投放被拒绝（allowed=false），仍可拖到 center 合并。
+ *  - **最小尺寸**：bounds 是必填参数，边缘拆分前一定用 canSplit() 按目标 Pane 当前矩形检查，
+ *    不满足就拒绝（allowed=false，树不变），Center 合并不受影响。约束在纯函数里，
+ *    任何调用方（预览 / 落位 / 未来新入口）都绕不过去。
  *  - 源 Pane 只剩这一个 Tab 时边缘投放会让源 Pane 变空 → 返回 placeholderPaneId，
  *    由 TabManager 先补一个空白页签再重算，保证窗格数确实 +1（与 M1 splitWithTab 行为一致）。
  */
@@ -377,7 +380,9 @@ export function applyTabDrop(
   tabId: string,
   targetPaneId: string,
   side: DropSide,
+  bounds: Rect,
   insertIndex?: number,
+  options: LayoutOptions = {},
 ): TabDropResult {
   const base: TabDropResult = {
     root,
@@ -411,6 +416,18 @@ export function applyTabDrop(
   }
 
   const { direction, placement } = directionForSide(side);
+  // 硬约束：按目标 Pane 当前实际矩形判断能否继续朝这个方向拆。
+  // 不放在 Renderer 里 —— 预览与落位都走这里，绕过 UI 直接调 IPC 也拆不了。
+  if (!canSplit(root, bounds, targetPaneId, direction, options)) {
+    const minW = Math.max(1, options.minPaneWidth ?? MIN_PANE_WIDTH);
+    const minH = Math.max(1, options.minPaneHeight ?? MIN_PANE_HEIGHT);
+    return {
+      ...base,
+      allowed: false,
+      reason: `窗口太小：继续拆分后每格不足 ${minW}×${minH}，只能拖到中心合并`,
+    };
+  }
+
   const split = splitPane(root, targetPaneId, direction, placement);
   if (!split.changed) return { ...base, reason: "无法在此处新建窗格" };
 
@@ -699,6 +716,27 @@ export function canSplit(
   return direction === "horizontal"
     ? rect.width - gap >= minW * 2 && rect.height >= minH
     : rect.height - gap >= minH * 2 && rect.width >= minW;
+}
+
+/** 「拖到窗口最左/最右/最上/最下」：在整棵树外面再套一层之前判断空间够不够。
+ *  原树在该轴上的最小需求按 minSpanAlong() 展开，新窗格至少占一个最小尺寸。 */
+export function canAddEdge(
+  root: LayoutNode,
+  bounds: Rect,
+  side: EdgeSide,
+  options: LayoutOptions = {},
+): boolean {
+  if (paneCount(root) >= MAX_PANES) return false;
+  const gap = Math.max(0, options.gap ?? SASH_GAP);
+  const minW = Math.max(1, options.minPaneWidth ?? MIN_PANE_WIDTH);
+  const minH = Math.max(1, options.minPaneHeight ?? MIN_PANE_HEIGHT);
+  const direction = directionForSide(side).direction;
+  const horizontal = direction === "horizontal";
+  const size = horizontal ? bounds.width : bounds.height;
+  const needExisting = minSpanAlong(root, direction, gap, minW, minH);
+  const needFresh = horizontal ? minW : minH;
+  const otherAxisOk = horizontal ? bounds.height >= minH : bounds.width >= minW;
+  return size - gap >= needExisting + needFresh && otherAxisOk;
 }
 
 /* ----------------------------- 无效树恢复 ----------------------------- */

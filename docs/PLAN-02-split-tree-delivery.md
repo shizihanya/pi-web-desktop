@@ -7,7 +7,8 @@
 | --- | --- | --- |
 | M1 | `19ae442` | 平面 groups → 嵌套 Split Tree；递归布局；tabs.json v2 与旧配置迁移 |
 | M2 | `3c66c4a` | 每个 SplitNode 一条分隔条，Pointer Events 拖动独立 ratio |
-| M3 | 最新提交（`git log -1`） | 五方向投放、落位预览、上限 / 取消 / 跨窗格移动；本交付文档 |
+| M3 | `94b372a` | 五方向投放、落位预览、上限 / 取消 / 跨窗格移动；本交付文档 |
+| P1 修复 | 最新提交（`git log -1`） | 新建 Pane 前的最小尺寸硬约束（纯函数内执行、预览 / 落位 / 右键拆分 / 边缘拆分全覆盖） |
 
 ---
 
@@ -41,7 +42,7 @@
 | `src/renderer/tabbar/index.html` | 新增 `#sash-layer` / `#drop-preview` | M2 / M3 |
 | `src/renderer/tabbar/style.css` | 分隔条细线 / 调整光标；五方向投放区与预览层样式 | M2 / M3 |
 | `src/renderer/tabbar/tabbar.ts` | 分隔条 Pointer Events；五区域命中、rAF 预览、Esc / blur 收尾；拖动中增量更新 DOM | M2 / M3 |
-| `scripts/check-split-model.mjs` | **新增** 218 项纯数据 + 静态契约回归 | M1 / M2 / M3 |
+| `scripts/check-split-model.mjs` | **新增** 245 项纯数据 + 静态契约回归 | M1 / M2 / M3 / P1 修复 |
 | `package.json` | `check:split-model` 纳入 `check` | M1 |
 | `README.md` | 分屏说明、快捷键表、目录速览、当前状态 | M1 / M2 / M3 |
 | `docs/PLAN-02-split-tree-delivery.md` | 本文件 | M3 |
@@ -118,7 +119,10 @@ interface PaneNode {
 
 - **预览**：`previewTabDrop()` 用与落位**同一个** `applyTabDrop()` 算出假想树，再由 `computeLayoutRects()` 得到所有窗格矩形，渲染层只画半透明轮廓 + 高亮目标窗格。预览绝不改动真实树，因此取消天然恢复。
 - **落位**：`dropTab()` 再次调用 `applyTabDrop()`，保证「看到的 = 得到的」；只搬 Tab id，不关闭 / 不重建 / 不重载任何页面。
-- **限制**：已达 4 窗格时四个边缘置灰并拒绝投放，Center 仍可合并；一个 Tab 全局只出现一次；移走某窗格最后一个 Tab 时（Center 投放）源 Pane 自动合并并折叠父 SplitNode。
+- **限制**：已达 4 窗格、或目标 Pane 当前矩形不足以拆出两个满足最小尺寸的子窗格时，对应边缘置灰并拒绝投放，Center 仍可合并；一个 Tab 全局只出现一次；移走某窗格最后一个 Tab 时（Center 投放）源 Pane 自动合并并折叠父 SplitNode。
+- **最小尺寸硬约束（P1 修复）**：`applyTabDrop()` 把窗口 `bounds` 设为**必填参数**，边缘拆分前一定调用 `canSplit(root, bounds, targetPaneId, direction)`，按目标 Pane 的**当前实际矩形**判断两边是否都 ≥ 360×260（左右看宽度、上下看高度，另一轴也要够）；不满足即返回 `allowed:false`、树不变。因为约束写在纯函数里，预览与落位共用、绕过 UI 直接调 IPC 也拆不了。`splitWithTab()`（右键 / `Alt+点击` / `Ctrl+\`）用同一个 `canSplit`，`splitTabToEdge()` 用新增的 `canAddEdge()`（按整棵树在该轴上的 `minSpanAlong` 展开）。空间不足时降级为「把页签移到相邻窗格」并写 debug 日志。
+- **Renderer 只显示不算**：主进程 `snapshot()` 下发 `split.dropSides`（每个窗格允许的方向，由主进程 `canSplit` + 4 窗格上限算好），Renderer 只按它置灰；Renderer 源码里没有 `canSplit` 调用。
+- **分隔条拖动保持原样**：`clampRatioForBounds()` / `computeLayoutRects()` 在窗口实在放不下时仍按比例降级，不改成硬拒绝。布局预设（`▣` / `Ctrl+Alt+1..4`）同样属于整体切换，仍走降级路径；硬约束只针对「继续拆分」这类增量新建 Pane 的操作。
 - **取消**：`Esc`、窗口失焦、`dragend`、拖出窗口都走 `endSplitDrag()`，清空预览层并恢复视图。
 - **投放层不阻断无关交互**：`hidden` 时 `display:none`，预览层 `pointer-events:none` 且只在拖动期间显示。
 
@@ -155,10 +159,10 @@ interface PaneNode {
 | --- | --- |
 | `npm run typecheck` | 0 |
 | `npm run check`（1 × typecheck + 17 项既有回归） | 0 |
-| `npm run check:split-model` | **218 ✓ / 0 ✗** |
+| `npm run check:split-model` | **245 ✓ / 0 ✗** |
 | `npm run build`（main / preload / renderer） | 0 |
 
-`check-split-model.mjs` 覆盖：树创建与稳定 id、左右 / 上下 / 嵌套拆分、比例计算与最小尺寸、非整数与极小窗口、拆分上限、移动 Tab、合并 / 删除空 Pane、单子节点折叠、坏树恢复、5 个预设转换、旧配置迁移各形状、v2 往返与安全降级、M2 的 ratio 换算 / 独立比例 / 窗口缩放 / 连续拖动 / 重启恢复、M3 的五方向落位 / 上限 / 预览与落位一致 / 取消恢复 / 页签不丢，以及静态契约（不重载视图、单一布局源、IPC 一致、Pointer Events / rAF / Esc / 看门狗 / 拖动不写盘）。
+`check-split-model.mjs` 覆盖：树创建与稳定 id、左右 / 上下 / 嵌套拆分、比例计算与最小尺寸、非整数与极小窗口、拆分上限、移动 Tab、合并 / 删除空 Pane、单子节点折叠、坏树恢复、5 个预设转换、旧配置迁移各形状、v2 往返与安全降级、M2 的 ratio 换算 / 独立比例 / 窗口缩放 / 连续拖动 / 重启恢复、M3 的五方向落位 / 上限 / 预览与落位一致 / 取消恢复 / 页签不丢、**P1 修复的 `canSplit` / `canAddEdge` 判定、`applyTabDrop` 纯函数内拒绝、Center 不受影响、1440 宽连续同方向拆分不产生 <360 窗格、预览与落位一致地拒绝**，以及静态契约（不重载视图、单一布局源、约束在纯函数里、主进程所有 `applyTabDrop` 调用都带 bounds、Renderer 不自己算 canSplit、IPC 一致、Pointer Events / rAF / Esc / 看门狗 / 拖动不写盘）。
 
 **未做**：计划中的 Electron GUI 集成测试（真实多 Agent 并发下拖布局、重启恢复不重载等）。纯逻辑与静态契约已覆盖，但真实窗口行为仍需按第 9 节人工回归。
 
@@ -167,7 +171,7 @@ interface PaneNode {
 ## 8. 未解决的问题 / 已知偏差
 
 1. **拖页签期间仍会隐藏内容视图**（显示半透明蒙层）。这是 `WebContentsView` 无鼠标穿透 API 的现状所致；独立 overlay 视图方案因改造面大未采用。页面状态不丢失、不重载，但视觉上会短暂看不到页面。
-2. **最小尺寸取 360×260**，而非计划建议的 420×300：主窗口最小 900×600，取 420 会让三栏 / 四宫格在最小窗口下几乎全部不可行；360/260 在 1440×900 下仍生效，空间不足时按比例降级。
+2. **最小尺寸取 360×260**，而非计划建议的 420×300：主窗口最小 900×600，取 420 会让三栏 / 四宫格在最小窗口下几乎全部不可行；360/260 在 1440×900 下仍生效。现在「继续拆分」是**硬约束**（不满足直接拒绝，见 §5）；分隔条拖动与布局预设仍保留按比例降级 —— 例如 900 宽选三栏会得到约 295px 的窗格，这是显式的整体布局切换，不是增量拆分。
 3. **边缘投放时源 Pane 只剩一个 Tab 会补一个空白页签**（`createTab("/")`），而不是按「自动合并」把源 Pane 删掉。理由：若删掉源 Pane，窗格数不会增加，五方向拆分的常见场景（每窗格 1 个 Tab）会完全失效；补位与 M1 `splitWithTab`、README 中「保证分屏不会因为一次拖动就没了」一致，且不关闭 / 不重载任何原有 Tab。Center 投放仍严格按计划「移走最后一个 Tab → 源 Pane 自动合并」。
 4. **`Ctrl+\` 连按不再得到 3 / 4 个等宽列**，而是在目标窗格内产生嵌套形状；等宽三栏 / 四宫格请用 `▣` 下拉或 `Ctrl+Alt+3 / 4`。
 5. **分隔条命中区只有 8px**：再加宽就会被 `WebContentsView` 盖住。
