@@ -396,6 +396,35 @@ export interface PiWebUpdateResult {
   view: SettingsView;
 }
 
+/* ----------------------------- pi 更新 ----------------------------- */
+
+export type PiUpdatePhase =
+  | "checking"
+  | "updating"
+  | "up-to-date"
+  | "done"
+  | "failed";
+
+export interface PiUpdateProgress {
+  phase: PiUpdatePhase;
+  message: string;
+  /** pi CLI 输出的一行（只用于设置页滚动日志） */
+  log?: string;
+  current?: string | null;
+  installed?: string | null;
+}
+
+export type PiUpdateStatus = "up-to-date" | "updated" | "failed";
+
+export interface PiUpdateResult {
+  ok: boolean;
+  status: PiUpdateStatus;
+  message: string;
+  current: string | null;
+  installed: string | null;
+  view: SettingsView;
+}
+
 export interface SettingsApi {
   load(): Promise<SettingsView>;
   save(patch: SettingsPatch): Promise<SaveResult>;
@@ -409,6 +438,10 @@ export interface SettingsApi {
   updatePiWeb(): Promise<PiWebUpdateResult>;
   /** 更新流程的实时进度 / npm 输出 */
   onPiWebUpdate(cb: (progress: PiWebUpdateProgress) => void): () => void;
+  /** 检查 pi CLI 与已安装扩展；有更新时执行 pi update --all */
+  updatePi(): Promise<PiUpdateResult>;
+  /** pi 更新流程的实时进度 / CLI 输出 */
+  onPiUpdate(cb: (progress: PiUpdateProgress) => void): () => void;
 }
 
 export const SETTINGS_IPC = {
@@ -421,4 +454,6 @@ export const SETTINGS_IPC = {
   close: "settings:close",
   updatePiWeb: "settings:piweb-update",
   piWebUpdateEvent: "settings:piweb-update-event",
+  updatePi: "settings:pi-update",
+  piUpdateEvent: "settings:pi-update-event",
 } as const;

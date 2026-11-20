@@ -3,6 +3,8 @@ import { randomInt } from "node:crypto";
 import {
   SETTINGS_IPC,
   type LanAddress,
+  type PiUpdateProgress,
+  type PiUpdateResult,
   type PiWebUpdateProgress,
   type PiWebUpdateResult,
   type SaveResult,
@@ -19,6 +21,7 @@ import {
   secureAvailable,
 } from "./secret-store";
 import { listLanAddresses } from "./server/network";
+import { classifyPiUpdate, piOutputTail, readPiVersion, runPi } from "./server/pi-update";
 import {
   checkPiWebUpdate,
   installPiWebUpdate,
@@ -56,6 +59,8 @@ export interface SettingsServiceDeps {
 export class SettingsService {
   /** 升级会停服务 + 改全局包，必须串行，禁止重复点击 */
   private updateRunning = false;
+  /** pi / 扩展更新会替换全局 CLI，也必须串行 */
+  private piUpdateRunning = false;
 
   constructor(private readonly deps: SettingsServiceDeps) {}
 
@@ -271,6 +276,81 @@ export class SettingsService {
   }
 
   /**
+   * pi CLI 与扩展更新：pi 自带「检查 + 按需更新」语义，没有单独 --check。
+   * 直接走官方 `pi update --all`，一次覆盖 pi 本体与全部已安装扩展。
+   */
+  async runPiUpdate(emit: (progress: PiUpdateProgress) => void): Promise<PiUpdateResult> {
+    if (this.piUpdateRunning) {
+      return {
+        ok: false,
+        status: "failed",
+        message: "已有 pi 更新任务在进行中。",
+        current: null,
+        installed: null,
+        view: this.view(),
+      };
+    }
+    this.piUpdateRunning = true;
+
+    const send = (
+      phase: PiUpdateProgress["phase"],
+      message: string,
+      extra: Partial<PiUpdateProgress> = {},
+    ): void => emit({ phase, message, ...extra });
+
+    let current: string | null = null;
+    let installed: string | null = null;
+
+    try {
+      send("checking", "正在读取 pi 版本…");
+      current = await readPiVersion();
+      if (!current) {
+        throw new Error("未找到可用的 pi 命令，或 pi --version 无法执行。请确认 pi CLI 已安装并在 PATH 中。");
+      }
+      send("checking", `当前 pi v${current}，正在执行 pi update --all…`, { current });
+
+      const result = await runPi(["update", "--all"], {
+        onLine: (line) => send("updating", "正在更新 pi 与已安装扩展…", { current, log: line }),
+      });
+      const outcome = classifyPiUpdate(result);
+      if (outcome === "failed") {
+        const tail = piOutputTail(result.output);
+        throw new Error(
+          `pi update --all 失败${result.error ? `：${result.error}`
+            : result.code !== 0 ? `（退出码 ${result.code}）` : ""}${tail ? `：${tail}` : ""}`,
+        );
+      }
+
+      installed = (await readPiVersion()) ?? current;
+      const changed = outcome === "updated";
+      const parts: string[] = [];
+      if (/\bUpdated\s+\d+\s+packages?\s*:/i.test(result.output)) parts.push("扩展");
+      if (/\bUpdated\s+pi\s+from\b/i.test(result.output)) parts.push(`本体 v${installed}`);
+      const message = changed
+        ? `pi update --all 完成（${parts.join("、") || "已更新"}）。pi / pi-web 会话下次启动时使用新版本。`
+        : `pi v${installed} 及已安装扩展均已是最新。`;
+      const status = changed ? "updated" : "up-to-date";
+      send(changed ? "done" : "up-to-date", message, { current, installed });
+      return { ok: true, status, message, current, installed, view: this.view() };
+    } catch (error) {
+      const base = error instanceof Error ? error.message : String(error);
+      const message = `pi 更新失败：${base}`;
+      send("failed", message, { current, installed });
+      this.deps.getServer()?.log(`[pi-update] ${message}`);
+      return {
+        ok: false,
+        status: "failed",
+        message,
+        current,
+        installed,
+        view: this.view(),
+      };
+    } finally {
+      this.piUpdateRunning = false;
+    }
+  }
+
+  /**
    * 只在全局包确实被动过、且更新前版本已知时尝试恢复，并且**验证**恢复后的版本。
    * 验证不通过绝不声称「已回滚」，而是给可执行的手动命令。
    */
@@ -396,6 +476,14 @@ export class SettingsService {
         if (!progress.log) this.deps.getServer()?.log(`[update] ${progress.message}`);
         if (!event.sender.isDestroyed()) {
           event.sender.send(SETTINGS_IPC.piWebUpdateEvent, progress);
+        }
+      }),
+    );
+    ipcMain.handle(SETTINGS_IPC.updatePi, (event) =>
+      this.runPiUpdate((progress) => {
+        if (!progress.log) this.deps.getServer()?.log(`[pi-update] ${progress.message}`);
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(SETTINGS_IPC.piUpdateEvent, progress);
         }
       }),
     );

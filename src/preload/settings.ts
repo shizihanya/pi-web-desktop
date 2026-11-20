@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type {
   LanAddress,
+  PiUpdateProgress,
+  PiUpdateResult,
   PiWebUpdateProgress,
   PiWebUpdateResult,
   SaveResult,
@@ -20,6 +22,8 @@ const CH = {
   close: "settings:close",
   updatePiWeb: "settings:piweb-update",
   piWebUpdateEvent: "settings:piweb-update-event",
+  updatePi: "settings:pi-update",
+  piUpdateEvent: "settings:pi-update-event",
 } as const;
 
 const api: SettingsApi = {
@@ -36,6 +40,12 @@ const api: SettingsApi = {
     const listener = (_event: IpcRendererEvent, progress: PiWebUpdateProgress): void => cb(progress);
     ipcRenderer.on(CH.piWebUpdateEvent, listener);
     return () => ipcRenderer.removeListener(CH.piWebUpdateEvent, listener);
+  },
+  updatePi: () => ipcRenderer.invoke(CH.updatePi) as Promise<PiUpdateResult>,
+  onPiUpdate: (cb: (progress: PiUpdateProgress) => void) => {
+    const listener = (_event: IpcRendererEvent, progress: PiUpdateProgress): void => cb(progress);
+    ipcRenderer.on(CH.piUpdateEvent, listener);
+    return () => ipcRenderer.removeListener(CH.piUpdateEvent, listener);
   },
 };
 

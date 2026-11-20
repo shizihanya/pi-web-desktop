@@ -1,4 +1,9 @@
-import type { LanAddress, PiWebUpdateProgress, SettingsView } from "../../shared/types";
+import type {
+  LanAddress,
+  PiUpdateProgress,
+  PiWebUpdateProgress,
+  SettingsView,
+} from "../../shared/types";
 
 if (new URLSearchParams(location.search).get("titlebar") === "overlay") {
   document.documentElement.dataset.titlebar = "overlay";
@@ -16,7 +21,7 @@ const launchAtLogin = el<HTMLInputElement>("launch-at-login");
 const loginRow = el<HTMLLabelElement>("login-row");
 const restoreTabs = el<HTMLInputElement>("restore-tabs");
 const port = el<HTMLInputElement>("port");
-const portNote = el<HTMLParagraphElement>("port-note");
+const portNote = el<HTMLElement>("port-note");
 const piwebInfo = el<HTMLElement>("piweb-info");
 const serverInfo = el<HTMLElement>("server-info");
 const remoteEnabled = el<HTMLInputElement>("remote-enabled");
@@ -29,10 +34,19 @@ const status = el<HTMLSpanElement>("status");
 const dataDirLabel = el<HTMLSpanElement>("data-dir");
 const checkUpdate = el<HTMLButtonElement>("check-piweb-update");
 const updateLog = el<HTMLPreElement>("piweb-update-log");
+const checkPiUpdate = el<HTMLButtonElement>("check-pi-update");
+const piUpdateLog = el<HTMLPreElement>("pi-update-log");
+
+const contentScroll = el<HTMLElement>("content-scroll");
+const navItems = Array.from(document.querySelectorAll<HTMLButtonElement>(".nav-item"));
+const sections = Array.from(document.querySelectorAll<HTMLElement>(".settings-section"));
+const sectionScroll = new Map<string, number>();
 
 let view: SettingsView | null = null;
+let activeSectionId = "section-window";
 let passwordTouched = false;
 let updateRunning = false;
+let piUpdateRunning = false;
 
 const PHASE_LABEL: Record<SettingsView["server"]["phase"], string> = {
   idle: "未启动",
@@ -51,6 +65,33 @@ const UPDATE_TAG: Record<PiWebUpdateProgress["phase"], string> = {
   done: "完成",
   failed: "失败",
 };
+
+const PI_UPDATE_TAG: Record<PiUpdateProgress["phase"], string> = {
+  checking: "检查",
+  updating: "更新",
+  "up-to-date": "完成",
+  done: "完成",
+  failed: "失败",
+};
+
+/** 只切换可见性，不改任何表单值，避免未保存的修改在分类切换时丢失。 */
+function activateSection(id: string): void {
+  const section = sections.find((item) => item.id === id);
+  if (!section) return;
+
+  sectionScroll.set(activeSectionId, contentScroll.scrollTop);
+  activeSectionId = id;
+
+  for (const item of navItems) {
+    const active = item.dataset.target === id;
+    item.classList.toggle("is-active", active);
+    if (active) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  }
+
+  for (const item of sections) item.hidden = item.id !== id;
+  contentScroll.scrollTop = sectionScroll.get(id) ?? 0;
+}
 
 function setStatus(text: string, kind: "ok" | "err" | "" = ""): void {
   status.textContent = text;
@@ -103,6 +144,10 @@ function render(next: SettingsView): void {
     loginRow.classList.add("disabled");
     launchAtLogin.disabled = true;
     loginRow.title = "绿色版路径可能变化，不支持开机自启";
+  } else {
+    loginRow.classList.remove("disabled");
+    launchAtLogin.disabled = false;
+    loginRow.removeAttribute("title");
   }
 
   const resolved = next.resolved;
@@ -144,13 +189,13 @@ function collect(): Parameters<typeof window.piWebSettings.save>[0] {
 
 /** 一键：检查 → 停服 → npm 全局更新 → 重启服务 */
 async function runPiWebUpdate(): Promise<void> {
-  if (updateRunning) return;
+  if (updateRunning || piUpdateRunning) return;
   updateRunning = true;
   const buttons = [
     checkUpdate,
+    checkPiUpdate,
     el<HTMLButtonElement>("save"),
     el<HTMLButtonElement>("save-restart"),
-    el<HTMLButtonElement>("cancel"),
   ];
   for (const button of buttons) button.disabled = true;
   updateLog.hidden = false;
@@ -190,12 +235,61 @@ async function runPiWebUpdate(): Promise<void> {
   }
 }
 
-async function save(withRestart: boolean): Promise<void> {
-  if (updateRunning) return;
+/** pi 自带「检查 + 按需更新」：直接走 pi update --all。 */
+async function runPiUpdate(): Promise<void> {
+  if (updateRunning || piUpdateRunning) return;
+  piUpdateRunning = true;
   const buttons = [
+    checkUpdate,
+    checkPiUpdate,
     el<HTMLButtonElement>("save"),
     el<HTMLButtonElement>("save-restart"),
-    el<HTMLButtonElement>("cancel"),
+  ];
+  for (const button of buttons) button.disabled = true;
+  piUpdateLog.hidden = false;
+  piUpdateLog.textContent = "";
+  setStatus("正在检查 pi / 扩展更新…");
+
+  const append = (line: string): void => {
+    piUpdateLog.textContent += `${line}\n`;
+    piUpdateLog.scrollTop = piUpdateLog.scrollHeight;
+  };
+
+  const off = window.piWebSettings.onPiUpdate((progress) => {
+    if (progress.log) {
+      append(progress.log);
+      return;
+    }
+    append(`[${PI_UPDATE_TAG[progress.phase]}] ${progress.message}`);
+    const kind = progress.phase === "failed" ? "err"
+      : progress.phase === "done" || progress.phase === "up-to-date" ? "ok"
+      : "";
+    setStatus(progress.message, kind);
+  });
+
+  try {
+    const result = await window.piWebSettings.updatePi();
+    render(result.view);
+    setStatus(result.message, result.ok ? "ok" : "err");
+    if (!result.ok) append(`[失败] ${result.message}`);
+  } catch (error) {
+    const message = `pi 更新失败：${String(error)}`;
+    setStatus(message, "err");
+    append(message);
+  } finally {
+    off();
+    piUpdateRunning = false;
+    for (const button of buttons) button.disabled = false;
+  }
+}
+
+async function save(withRestart: boolean): Promise<void> {
+  if (updateRunning || piUpdateRunning) return;
+  const buttons = [
+    checkUpdate,
+    checkPiUpdate,
+    el<HTMLButtonElement>("save"),
+    el<HTMLButtonElement>("save-restart"),
   ];
   for (const button of buttons) button.disabled = true;
   setStatus(withRestart ? "正在保存并重启服务…" : "正在保存…");
@@ -230,6 +324,11 @@ async function save(withRestart: boolean): Promise<void> {
 async function main(): Promise<void> {
   render(await window.piWebSettings.load());
 
+  for (const item of navItems) {
+    item.addEventListener("click", () => activateSection(item.dataset.target ?? "section-window"));
+  }
+  activateSection("section-window");
+
   remoteEnabled.addEventListener("change", () => {
     remoteBox.hidden = !remoteEnabled.checked;
   });
@@ -259,9 +358,16 @@ async function main(): Promise<void> {
   });
 
   checkUpdate.addEventListener("click", () => void runPiWebUpdate());
+  checkPiUpdate.addEventListener("click", () => void runPiUpdate());
   el<HTMLButtonElement>("save").addEventListener("click", () => void save(false));
   el<HTMLButtonElement>("save-restart").addEventListener("click", () => void save(true));
-  el<HTMLButtonElement>("cancel").addEventListener("click", () => void window.piWebSettings.close());
+
+  // 取消按钮与窗口右上角关闭功能重复，改由 Esc / 窗口控件关闭。
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !updateRunning && !piUpdateRunning) {
+      void window.piWebSettings.close();
+    }
+  });
 }
 
 void main();
