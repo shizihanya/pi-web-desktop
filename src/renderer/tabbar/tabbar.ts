@@ -133,6 +133,10 @@ function createTabElement(tab: TabInfo, active: boolean, index: number): HTMLEle
   // 原生 Tooltip 展示完整标题；状态另起一行，不与项目/会话名称混在一起
   const fullTitle = tab.title || "新页签";
   el.title = STATUS_LABEL[tab.status] ? `${fullTitle}\n${STATUS_LABEL[tab.status]}` : fullTitle;
+  // 无障碍语义与视觉状态同步；页签每次 render 都重建，无需额外维护选中态
+  el.setAttribute("role", "tab");
+  el.setAttribute("aria-selected", String(active));
+  el.setAttribute("aria-label", fullTitle);
 
   el.append(createIcon(tab));
 

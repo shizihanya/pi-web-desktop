@@ -10,6 +10,12 @@
   --radius-md: 7px;
   --radius-pill: 999px;
 
+  /* 页签内部槽位：与顶部工具区同样用变量统一管理，单栏 / 分屏共用 */
+  --tab-gap: 6px;
+  --tab-icon-size: 14px;
+  --tab-close-size: 20px;
+  --tab-padding: 10px;
+
   /* Windows 自绘标题栏：右侧原生 WCO 窗口控件（最小化/最大化·还原/关闭）的安全区。
      env 不可用时退回 140px（加上容器 6px 内边距 ≈ 原来 146px 的兜底）。 */
   --wco-safe-width: max(
@@ -134,11 +140,12 @@ body {
    Agent 状态走独立的固定槽位，两者视觉表达完全分开。 */
 .tab {
   display: flex;
+  /* 图标 / 标题 / 状态 / 关闭统一垂直居中，不受标题行高影响 */
   align-items: center;
-  gap: 7px;
+  gap: var(--tab-gap);
   min-width: 108px;
   max-width: 220px;
-  padding: 0 10px;
+  padding: 0 var(--tab-padding);
   margin: 4px 0;
   border-radius: var(--radius-md);
   color: var(--text-muted);
@@ -162,8 +169,8 @@ body {
 .tab.active::after {
   content: "";
   position: absolute;
-  left: 10px;
-  right: 10px;
+  left: var(--tab-padding);
+  right: var(--tab-padding);
   bottom: 3px;
   height: 2px;
   border-radius: 2px;
@@ -182,11 +189,11 @@ body {
   box-shadow: inset -2px 0 0 var(--accent);
 }
 
-/* 图标固定 14px 槽位；标题始终 flex:1 + 单行省略，二者不会互相挤压 */
+/* 图标固定槽位；标题始终 flex:1 + 单行省略，二者不会互相挤压 */
 .tab-icon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
+  width: var(--tab-icon-size);
+  height: var(--tab-icon-size);
+  flex: 0 0 var(--tab-icon-size);
   border-radius: 4px;
   object-fit: contain;
 }
@@ -219,11 +226,12 @@ body {
   display: none;
 }
 
-/* 关闭按钮恒占 18px：隐藏/显示只改透明度，Tab 宽度不跳动、命中区足够大 */
+/* 关闭按钮恒占槽位：隐藏/显示只改透明度，Tab 宽度不跳动；
+   20px 命中区比原来的 18px 更好点，仍不挤占标题 */
 .tab-close {
-  width: 18px;
-  height: 18px;
-  flex: 0 0 18px;
+  width: var(--tab-close-size);
+  height: var(--tab-close-size);
+  flex: 0 0 var(--tab-close-size);
   border-radius: 5px;
   display: grid;
   place-items: center;
@@ -242,10 +250,11 @@ body {
   opacity: 0.72;
 }
 
+/* 关闭按钮自己的 Hover 与 Tab 的 Hover 分开：底色更明显但仍克制 */
 .tab:hover .tab-close:hover,
 .tab.active .tab-close:hover {
   opacity: 1;
-  background: color-mix(in srgb, var(--text) 14%, transparent);
+  background: color-mix(in srgb, var(--text) 18%, transparent);
   color: var(--text);
 }
 
@@ -382,15 +391,15 @@ body {
   }
 }
 
-/* 加载中转圈与站点图标共用 14px 槽位：loading→ready 时页签宽度不跳动 */
+/* 加载中转圈与站点图标共用槽位：loading→ready 时页签宽度不跳动 */
 .spinner {
-  width: 14px;
-  height: 14px;
+  width: var(--tab-icon-size);
+  height: var(--tab-icon-size);
   border-radius: 50%;
   border: 1.6px solid var(--border);
   border-top-color: var(--accent);
   animation: spin 0.8s linear infinite;
-  flex: 0 0 14px;
+  flex: 0 0 var(--tab-icon-size);
 }
 
 @keyframes spin {

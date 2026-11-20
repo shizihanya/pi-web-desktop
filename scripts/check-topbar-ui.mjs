@@ -86,11 +86,16 @@ check(
   "line-height 不能压到 1，否则 g/p/y 下半部会被裁掉",
 );
 check("图标 / 状态 / 关闭按钮均为固定槽位（不重排）",
-  /\.tab-icon\s*\{[^}]*flex:\s*0 0 14px/s.test(css) &&
-  /\.spinner\s*\{[^}]*flex:\s*0 0 14px/s.test(css) &&
+  /--tab-icon-size:\s*14px/.test(css) &&
+  /--tab-close-size:\s*20px/.test(css) &&
+  /\.tab-icon\s*\{[^}]*flex:\s*0 0 var\(--tab-icon-size\)/s.test(css) &&
+  /\.spinner\s*\{[^}]*flex:\s*0 0 var\(--tab-icon-size\)/s.test(css) &&
   /\.tab-status\s*\{[^}]*flex:\s*0 0 12px/s.test(css) &&
-  /\.tab-close\s*\{[^}]*flex:\s*0 0 18px/s.test(css));
+  /\.tab-close\s*\{[^}]*flex:\s*0 0 var\(--tab-close-size\)/s.test(css));
+check("图标 / 标题 / 状态 / 关闭统一垂直居中", /\.tab\s*\{[^}]*align-items:\s*center/s.test(css));
 check("关闭按钮 Hover 才显示，活动页签可见", /\.tab:hover\s+\.tab-close,\s*\.tab\.active\s+\.tab-close\s*\{[^}]*opacity/s.test(css));
+check("关闭按钮有独立 Hover 底色", /\.tab-close:hover\s*\{[^}]*background:\s*color-mix/s.test(css));
+check("页签具备 role=tab / aria-selected / aria-label", /setAttribute\("role", "tab"\)/.test(ts) && /setAttribute\("aria-selected", String\(active\)\)/.test(ts) && /setAttribute\("aria-label", fullTitle\)/.test(ts));
 check("固定页签保留原有隐藏规则", /\.tab\.pinned\s+\.tab-title,\s*\.tab\.pinned\s+\.tab-close\s*\{[^}]*display:\s*none/s.test(css));
 check("Agent 状态与项目身份视觉分离", /\.tab-status/.test(css) && !/\.tab\[data-project[^\]]*\]\s*\{/.test(css) && !/projectColor|project-color/.test(css + ts));
 check("焦点 / 非焦点 Pane 的 Tab 有适度差异", /\.pane-tabbar:not\(\.is-focused\)\s+\.tab\.active/.test(css) && /\.pane-tabbar\.is-focused/.test(css));
