@@ -50,11 +50,26 @@ export const IPC = {
 
 export const NOTIFICATION_IPC = {
   clicked: "notification:clicked",
+  create: "notification:create",
+  close: "notification:close",
+  activatedEvent: "notification:activated",
 } as const;
 
-/** 只注入到 pi-web WebContentsView 的最小通知点击接口 */
+export interface NotificationToastPayload {
+  title: string;
+  body: string;
+  tag: string;
+  silent: boolean;
+}
+
+/** 只注入到 pi-web WebContentsView 的最小通知接口 */
 export interface NotificationClickApi {
+  /** Plan 01：Chromium 通知即时点击兜底 */
   clicked(): void;
+  /** Windows：交由主进程创建唯一 Toast，返回主进程生成的通知 ID */
+  create(payload: NotificationToastPayload): string | null;
+  close(id: string): void;
+  onActivated(cb: (payload: { id: string }) => void): () => void;
 }
 
 /* ------------------------------- 页签 ------------------------------- */

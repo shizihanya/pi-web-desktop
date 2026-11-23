@@ -23,6 +23,7 @@ import {
   findNotificationSenderTabId,
   isNotificationClickSender,
 } from "./tabs/notification-bridge";
+import { installNotificationHost } from "./tabs/notification-host";
 import { DraftWorkspace, type DraftContents } from "./tabs/draft-workspace";
 import {
   COMPOSER_DIAGNOSE_SCRIPT,
@@ -127,6 +128,17 @@ async function boot(): Promise<void> {
       manager?.log(`[notify] 点击激活：tab=${sourceTabId ?? "none"}`);
     }
   });
+  if (process.platform === "win32") {
+    installNotificationHost({
+      isNotificationSender: (sender) => isNotificationClickSender(sender),
+      findTabIdBySender: (sender) =>
+        tabs ? findNotificationSenderTabId(tabs, sender) : null,
+      isTabAlive: (tabId) => Boolean(tabs?.allDraftContexts().some((item) => item.tabId === tabId)),
+      showWindow: () => showMainWindowIfPossible(),
+      activateTab: (tabId) => tabs?.activate(tabId),
+      log: (message) => manager?.log(message),
+    });
+  }
   settingsService.registerIpc();
 
   // 独立输入工作区：只用 provider 访问 TabManager，服务重启重建页签不会丢草稿。

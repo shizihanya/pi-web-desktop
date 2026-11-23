@@ -6,11 +6,12 @@
  * 返回 "service-worker"，不再回落 new Notification()。另外 WebContentsView 在主窗口失焦后
  * 仍报告 document.hasFocus() === true，会让 pi-web 判定「页面仍在前台」而不发通知。
  *
- * 补丁只做三件事，不碰其它 Web API、不改 pi-web 文件：
+ * 补丁负责：
  *  1. 让 SW showNotification reject，回落到 window.Notification；
  *  2. 用 __piDesktopWindowFocused 把 BrowserWindow 焦点同步给 document.hasFocus()；
- *  3. 包装 Notification 构造器，把页签名（会话/项目名）拼进通知标题；
- *  4. 给每条通知附加 click 监听，只通知桌面层恢复窗口，不覆盖上游 onclick。
+ *  3. 包装 Notification 构造器，把页签名拼进通知标题；
+ *  4. Windows 下把通知交给主进程创建带 launch 的 Toast，并保留上游 onclick；
+ *  5. preload 缺失时回落到 Chromium Web Notification 与 Plan 01 点击桥。
  *
  * 幂等：dom-ready / did-finish-load 各执行一次；页面 realm 重建后自动重新安装。
  * 注入脚本返回 JSON 诊断，交给 compat.ts 做 notificationCompatible 判定；
@@ -24,6 +25,7 @@ export interface NotificationPatchResult {
   focusPatchInstalled: boolean;
   swPatchInstalled: boolean;
   notificationWrapped: boolean;
+  toastBridgeInstalled: boolean;
   error: string | null;
 }
 
@@ -35,6 +37,7 @@ export const WINDOWS_NOTIFICATION_PATCH = String.raw`(() => {
     focusPatchInstalled: false,
     swPatchInstalled: false,
     notificationWrapped: false,
+    toastBridgeInstalled: false,
     error: null
   };
   try {
@@ -68,39 +71,142 @@ export const WINDOWS_NOTIFICATION_PATCH = String.raw`(() => {
     result.swPatchInstalled = !!(proto && proto.__piDesktopNotificationPatch);
 
     var OriginalNotification = window.Notification;
+    var bridge = window.__piDesktopNotificationBridge;
+    result.toastBridgeInstalled = !!(
+      bridge && typeof bridge.create === "function" && typeof bridge.onActivated === "function"
+    );
+
     if (OriginalNotification && !window.__piDesktopNotificationWrapped) {
       var tabTitle = function () {
         try {
           return (document.title || "").replace(/\s*[-\u2013\u2014]\s*Pi\s*Web\s*$/i, "").trim();
         } catch (e) { return ""; }
       };
-      class PiDesktopNotification extends OriginalNotification {
+      var finalTitleOf = function (title) {
+        var finalTitle = typeof title === "string" ? title : "";
+        try {
+          var tab = tabTitle();
+          if (tab && finalTitle && finalTitle.indexOf(tab) === -1) {
+            finalTitle = tab + " \u2014 " + finalTitle;
+          } else if (tab && !finalTitle) {
+            finalTitle = tab;
+          }
+        } catch (e) {}
+        return finalTitle;
+      };
+      var fallbackNotification = function (finalTitle, options) {
+        var native = new OriginalNotification(finalTitle, options);
+        try {
+          if (typeof native.addEventListener === "function") {
+            var reported = false;
+            native.addEventListener("click", function () {
+              if (reported) return;
+              reported = true;
+              try {
+                var b = window.__piDesktopNotificationBridge;
+                if (b && typeof b.clicked === "function") b.clicked();
+              } catch (e) {}
+            });
+          }
+        } catch (e) {}
+        return native;
+      };
+
+      class PiDesktopNotification {
         constructor(title, options) {
-          var finalTitle = typeof title === "string" ? title : "";
+          var finalTitle = finalTitleOf(title);
+          var opts = options || {};
+          var activeBridge = window.__piDesktopNotificationBridge;
+          if (!activeBridge || typeof activeBridge.create !== "function" ||
+              typeof activeBridge.onActivated !== "function") {
+            return fallbackNotification(finalTitle, options);
+          }
+
+          this.title = finalTitle;
+          this.body = typeof opts.body === "string" ? opts.body : "";
+          this.tag = opts.tag === undefined || opts.tag === null ? "" : String(opts.tag);
+          this.silent = opts.silent === true;
+          this.__onclick = null;
+          this.__onclose = null;
+          this.__onshow = null;
+          this.__onerror = null;
+          this.__listeners = {};
+          this.__closed = false;
+          this.__id = null;
+
+          var id = null;
           try {
-            var tab = tabTitle();
-            if (tab && finalTitle && finalTitle.indexOf(tab) === -1) {
-              finalTitle = tab + " — " + finalTitle;
-            } else if (tab && !finalTitle) {
-              finalTitle = tab;
-            }
+            id = activeBridge.create({
+              title: finalTitle,
+              body: this.body,
+              tag: this.tag,
+              silent: this.silent
+            });
           } catch (e) {}
-          super(finalTitle, options);
-          var clickReported = false;
+          if (typeof id !== "string" || !id) {
+            return fallbackNotification(finalTitle, options);
+          }
+
+          this.__id = id;
+          var self = this;
           try {
-            if (typeof this.addEventListener === "function") {
-              this.addEventListener("click", function () {
-                if (clickReported) return;
-                clickReported = true;
-                try {
-                  var bridge = window.__piDesktopNotificationBridge;
-                  if (bridge && typeof bridge.clicked === "function") bridge.clicked();
-                } catch (e) {}
-              });
-            }
+            activeBridge.onActivated(function (payload) {
+              if (payload && payload.id === id && !self.__closed) self.__dispatchClick();
+            });
+          } catch (e) {}
+
+          try {
+            setTimeout(function () {
+              try {
+                if (typeof self.onshow === "function") self.onshow.call(self, {});
+              } catch (e) {}
+            }, 0);
+          } catch (e) {}
+        }
+
+        get onclick() { return this.__onclick; }
+        set onclick(fn) { this.__onclick = typeof fn === "function" ? fn : null; }
+
+        __dispatchClick() {
+          if (this.__closed) return;
+          this.__closed = true;
+          try {
+            if (typeof this.__onclick === "function") this.__onclick.call(this, {});
+          } catch (e) {}
+          try {
+            var list = this.__listeners.click || [];
+            for (var i = 0; i < list.length; i += 1) list[i].call(this, {});
+          } catch (e) {}
+          try {
+            if (typeof this.__onclose === "function") this.__onclose.call(this, {});
+          } catch (e) {}
+        }
+
+        addEventListener(type, listener) {
+          if (typeof listener !== "function") return;
+          if (!this.__listeners[type]) this.__listeners[type] = [];
+          this.__listeners[type].push(listener);
+        }
+
+        removeEventListener(type, listener) {
+          var list = this.__listeners[type] || [];
+          var index = list.indexOf(listener);
+          if (index >= 0) list.splice(index, 1);
+        }
+
+        close() {
+          if (this.__closed) return;
+          this.__closed = true;
+          try {
+            var b = window.__piDesktopNotificationBridge;
+            if (b && typeof b.close === "function" && this.__id) b.close(this.__id);
           } catch (e) {}
         }
       }
+
+      try {
+        Object.setPrototypeOf(PiDesktopNotification, OriginalNotification);
+      } catch (e) {}
       window.Notification = PiDesktopNotification;
       Object.defineProperty(window, "__piDesktopNotificationWrapped", { value: true });
     }
@@ -115,6 +221,7 @@ export const WINDOWS_NOTIFICATION_PATCH = String.raw`(() => {
 export const NOTIFICATION_COMPAT_SCRIPT = String.raw`(() => {
   try {
     var proto = window.ServiceWorkerRegistration && window.ServiceWorkerRegistration.prototype;
+    var bridge = window.__piDesktopNotificationBridge;
     return JSON.stringify({
       hasNotification: typeof window.Notification === "function",
       hasDocumentHasFocus: typeof document.hasFocus === "function",
@@ -122,6 +229,7 @@ export const NOTIFICATION_COMPAT_SCRIPT = String.raw`(() => {
       focusPatchInstalled: !!document.__piDesktopHasFocusPatch,
       swPatchInstalled: !!(proto && proto.__piDesktopNotificationPatch),
       notificationWrapped: !!window.__piDesktopNotificationWrapped,
+      toastBridgeInstalled: !!(bridge && typeof bridge.create === "function" && typeof bridge.onActivated === "function"),
       error: null
     });
   } catch (error) {

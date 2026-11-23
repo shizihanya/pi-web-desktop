@@ -3,7 +3,7 @@
  * Windows 通知补丁的回归检查：不启动 Electron，把注入脚本抽出来在模拟 realm 里跑。
  *
  * 覆盖：窗口聚焦/失焦通知、多页签通知标题、重复注入幂等、页面重新加载后重装、
- *       增强关闭时只做只读检测、上游通知实现变化时不强行改写。
+ *       Toast 接管、上游 onclick 保留、preload 缺失降级、增强关闭只读检测。
  *
  *   npm run check:notification
  */
@@ -37,15 +37,15 @@ function check(label, ok, detail = "") {
 }
 
 /** 一个全新的页面 realm（页面 reload 后就是这么干净） */
-function makeRealm({ title = "会话A - Pi Web", withSw = true, withNotification = true } = {}) {
-  const created = [];
+function makeRealm({ title = "会话A - Pi Web", withSw = true, withNotification = true, withBridge = true } = {}) {
+  const nativeCreated = [];
   class FakeNotification {
     constructor(titleText, options) {
       this.title = titleText;
       this.options = options;
       this.listeners = new Map();
       this.onclick = null;
-      created.push(this);
+      nativeCreated.push(this);
     }
     addEventListener(type, listener) {
       const list = this.listeners.get(type) ?? [];
@@ -53,40 +53,63 @@ function makeRealm({ title = "会话A - Pi Web", withSw = true, withNotification
       this.listeners.set(type, list);
     }
     dispatch(type) {
-      if (type === "click" && typeof this.onclick === "function") this.onclick.call(this);
-      for (const listener of [...(this.listeners.get(type) ?? [])]) listener.call(this);
+      if (type === "click" && typeof this.onclick === "function") this.onclick.call(this, {});
+      for (const listener of [...(this.listeners.get(type) ?? [])]) listener.call(this, {});
     }
   }
   const win = {};
-  const bridgeCalls = { count: 0 };
-  win.__piDesktopNotificationBridge = { clicked: () => { bridgeCalls.count += 1; } };
+  const bridgeCalls = { clicked: 0 };
+  const bridgeState = { created: [], closed: [], listeners: [], seq: 0 };
   if (withNotification) win.Notification = FakeNotification;
+  if (withBridge) {
+    win.__piDesktopNotificationBridge = {
+      clicked: () => { bridgeCalls.clicked += 1; },
+      create: (payload) => {
+        bridgeState.created.push(payload);
+        bridgeState.seq += 1;
+        return `nid-${bridgeState.seq}`;
+      },
+      close: (id) => bridgeState.closed.push(id),
+      onActivated: (cb) => {
+        bridgeState.listeners.push(cb);
+        return () => {};
+      },
+    };
+  }
   if (withSw) {
     win.ServiceWorkerRegistration = {
       prototype: { showNotification: () => Promise.resolve("service-worker") },
     };
   }
-  const doc = {
-    title,
-    hasFocus: () => true,
-  };
+  const doc = { title, hasFocus: () => true };
   globalThis.window = win;
   globalThis.document = doc;
-  return { win, doc, created, bridgeCalls, originalNotification: win.Notification };
+  return {
+    win,
+    doc,
+    nativeCreated,
+    bridgeCalls,
+    bridgeState,
+    originalNotification: win.Notification,
+  };
 }
 function apply(code) {
   const raw = new Function(`return ${code}`)();
   return JSON.parse(raw);
+}
+function activate(realm, id) {
+  for (const listener of [...realm.bridgeState.listeners]) listener({ id });
 }
 
 /* ------------------------- 安装 / 回落 / 焦点 ------------------------- */
 const realm = makeRealm();
 const result = apply(PATCH);
 check(
-  "补丁完整安装：hasFocus / SW 回落 / Notification 包装",
+  "补丁完整安装：hasFocus / SW 回落 / Notification 包装 / Toast 桥",
   result.focusPatchInstalled === true &&
     result.swPatchInstalled === true &&
     result.notificationWrapped === true &&
+    result.toastBridgeInstalled === true &&
     result.error === null,
   JSON.stringify(result),
 );
@@ -95,21 +118,35 @@ const swRejected = await realm.win.ServiceWorkerRegistration.prototype
   .then(() => false, () => true);
 check("SW showNotification reject → pi-web 回落 window.Notification", swRejected === true);
 
-const n1 = new realm.win.Notification("任务完成");
+const n1 = new realm.win.Notification("任务完成", { body: "A", tag: "t1" });
 check(
   "通知标题拼进页签名（去掉 ' - Pi Web' 后缀）",
   n1.title === "会话A — 任务完成",
   n1.title,
 );
+check(
+  "Windows Toast 接管：不创建 Chromium 原生通知",
+  realm.nativeCreated.length === 0 && realm.bridgeState.created.length === 1,
+  `native=${realm.nativeCreated.length} bridge=${realm.bridgeState.created.length}`,
+);
+check(
+  "通知数据通过受控 preload 交给主进程",
+  realm.bridgeState.created[0].title === "会话A — 任务完成" &&
+    realm.bridgeState.created[0].body === "A" &&
+    realm.bridgeState.created[0].tag === "t1",
+  JSON.stringify(realm.bridgeState.created[0]),
+);
+
 let upstreamClicks = 0;
 n1.onclick = () => { upstreamClicks += 1; };
-n1.dispatch("click");
-n1.dispatch("click");
+activate(realm, n1.__id);
+activate(realm, n1.__id);
 check(
-  "通知点击：桌面激活只发一次，且不覆盖上游 onclick",
-  realm.bridgeCalls.count === 1 && upstreamClicks === 2,
-  `desktop=${realm.bridgeCalls.count} upstream=${upstreamClicks}`,
+  "主进程激活保留上游 onclick，且同一通知只执行一次",
+  upstreamClicks === 1,
+  `upstream=${upstreamClicks}`,
 );
+
 realm.win.__piDesktopWindowFocused = true;
 check("窗口聚焦：document.hasFocus() 为 true", realm.doc.hasFocus() === true);
 realm.win.__piDesktopWindowFocused = false;
@@ -119,7 +156,7 @@ realm.win.__piDesktopWindowFocused = true;
 /* ------------------------- 幂等 / 重载 ------------------------- */
 const Wrapped = realm.win.Notification;
 const again = apply(PATCH);
-const n2 = new realm.win.Notification("任务完成");
+const n2 = new realm.win.Notification("任务完成", { body: "B" });
 check(
   "重复注入幂等：不重复包装、标题不重复拼前缀",
   realm.win.Notification === Wrapped &&
@@ -176,8 +213,11 @@ check(
   JSON.stringify(missingResult),
 );
 
-const noBridge = makeRealm();
-delete noBridge.win.__piDesktopNotificationBridge;
+/* ------------------------- 降级路径 ------------------------- */
+const noBridge = makeRealm({ withBridge: false });
+noBridge.win.__piDesktopNotificationBridge = {
+  clicked: () => { noBridge.bridgeCalls.clicked += 1; },
+};
 apply(PATCH);
 let missingBridgeSafe = true;
 let missingBridgeUpstream = 0;
@@ -189,9 +229,12 @@ try {
   missingBridgeSafe = false;
 }
 check(
-  "preload 缺失时安全降级：不抛错，上游 onclick 仍工作",
-  missingBridgeSafe && missingBridgeUpstream === 1,
-  `safe=${missingBridgeSafe} upstream=${missingBridgeUpstream}`,
+  "preload 缺失时回落 Chromium 通知：不抛错，上游 onclick 与 Plan 01 点击桥仍工作",
+  missingBridgeSafe &&
+    missingBridgeUpstream === 1 &&
+    noBridge.nativeCreated.length === 1 &&
+    noBridge.bridgeCalls.clicked === 1,
+  `safe=${missingBridgeSafe} upstream=${missingBridgeUpstream} clicked=${noBridge.bridgeCalls.clicked}`,
 );
 
 if (failed) process.exit(1);

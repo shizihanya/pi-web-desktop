@@ -205,11 +205,19 @@ const FEATURES = [
           "__piDesktopWindowFocused",
           '__piDesktopNotificationBridge',
           'addEventListener("click"',
+          'activeBridge.create',
         ],
       },
       {
         file: "src/preload/notification.ts",
-        needles: ["notification:clicked", "contextBridge.exposeInMainWorld", "ipcRenderer.send"],
+        needles: [
+          "notification:clicked",
+          "notification:create",
+          "notification:close",
+          "notification:activated",
+          "contextBridge.exposeInMainWorld",
+          "ipcRenderer.sendSync",
+        ],
       },
       {
         file: "src/main/ipc.ts",
@@ -218,6 +226,19 @@ const FEATURES = [
       {
         file: "src/main/tabs/tab-manager.ts",
         needles: ['join(__dirname, "../preload/notification.js")', "markNotificationClickSender"],
+      },
+      {
+        file: "src/main/tabs/notification-host.ts",
+        needles: [
+          "handleActivation",
+          "toastXml",
+          "NOTIFICATION_IPC.activatedEvent",
+          'details?.reason === "timedOut"',
+        ],
+      },
+      {
+        file: "src/main/tabs/notification-toast.ts",
+        needles: ["<toast launch=", "escapeXml", "parseNotificationLaunchArguments"],
       },
     ],
     upstream: [
