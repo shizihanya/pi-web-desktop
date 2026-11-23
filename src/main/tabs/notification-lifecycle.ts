@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   buildNotificationToastXml,
   parseNotificationLaunchArguments,
@@ -26,6 +27,8 @@ export interface NotificationLifecycleDeps<TNotification extends ToastNotificati
 
 interface NotificationRecord<TNotification extends ToastNotificationLike> {
   id: string;
+  /** 原始业务 tag；空字符串表示无 tag */
+  tagKey: string;
   sender: object;
   tabId: string | null;
   notification: TNotification;
@@ -45,25 +48,37 @@ function readPayload(raw: unknown): NotificationToastPayload | null {
   };
 }
 
-/** Windows Toast 身份只用主进程生成的 ID，避免业务 tag 冲突。 */
+/** 无业务 tag 的通知使用主进程生成的独立 Toast 身份。 */
 export function notificationIdentity(notificationId: string): string {
   return notificationId.replace(/[^A-Za-z0-9]/g, "").slice(0, 64) || "piwebnotification";
 }
 
 /**
- * 每条通知只由自己的 notificationId 管理。
- * 不维护跨通知的 tag 映射；创建、激活、关闭、失败都只影响当前 id。
+ * 同业务 tag 使用稳定 Toast 身份。
+ * 使用原始 tag 的 SHA-256，避免特殊字符、超长 tag 或清洗后碰撞导致不同业务错误合并。
+ */
+export function stableNotificationIdentity(rawTag: string): string {
+  return createHash("sha256").update(rawTag, "utf8").digest("hex");
+}
+
+/**
+ * 每条通知由自己的 notificationId 管理；同业务 tag 只保留最新记录。
+ * tag 使用原始字符串映射，Toast 身份使用稳定哈希，避免清洗碰撞。
  */
 export function createNotificationLifecycle<TNotification extends ToastNotificationLike>(
   deps: NotificationLifecycleDeps<TNotification>,
 ) {
   const records = new Map<string, NotificationRecord<TNotification>>();
+  const tagIds = new Map<string, string>();
   const debug = (message: string): void => deps.log?.(`[notify] ${message}`);
 
   const removeRecord = (id: string, closeToast = false): void => {
     const record = records.get(id);
     if (!record) return;
     records.delete(id);
+    if (record.tagKey && tagIds.get(record.tagKey) === id) {
+      tagIds.delete(record.tagKey);
+    }
     if (!closeToast || record.closed) return;
     record.closed = true;
     try {
@@ -98,14 +113,21 @@ export function createNotificationLifecycle<TNotification extends ToastNotificat
 
     const id = deps.createId();
     const tabId = deps.findTabIdBySender(sender);
+    const tagKey = payload.tag;
+    const previousId = tagKey ? tagIds.get(tagKey) ?? null : null;
+    // 同 tag 替换旧记录，但不主动 close 旧 Notification 对象：
+    // 新旧对象共享稳定 Toast 身份，close 旧对象可能误关闭新 Toast。
+    if (previousId) removeRecord(previousId, false);
+
     const toastXml = buildNotificationToastXml(payload, id);
     const notification = deps.createNotification({
       toastXml,
-      id: notificationIdentity(id),
+      id: tagKey ? stableNotificationIdentity(tagKey) : notificationIdentity(id),
     });
 
     const record: NotificationRecord<TNotification> = {
       id,
+      tagKey,
       sender,
       tabId,
       notification,
@@ -113,6 +135,7 @@ export function createNotificationLifecycle<TNotification extends ToastNotificat
       closed: false,
     };
     records.set(id, record);
+    if (tagKey) tagIds.set(tagKey, id);
 
     notification.on("click", () => activateRecord(id));
     notification.on("close", (details) => {

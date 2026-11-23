@@ -240,6 +240,8 @@ const FEATURES = [
         needles: [
           "buildNotificationToastXml",
           "notificationIdentity",
+          "stableNotificationIdentity",
+          "tagIds",
           'details?.reason === "timedOut"',
         ],
       },
