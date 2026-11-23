@@ -231,8 +231,15 @@ const FEATURES = [
         file: "src/main/tabs/notification-host.ts",
         needles: [
           "handleActivation",
-          "toastXml",
           "NOTIFICATION_IPC.activatedEvent",
+          "createNotificationLifecycle",
+        ],
+      },
+      {
+        file: "src/main/tabs/notification-lifecycle.ts",
+        needles: [
+          "buildNotificationToastXml",
+          "notificationIdentity",
           'details?.reason === "timedOut"',
         ],
       },
