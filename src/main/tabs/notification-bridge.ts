@@ -18,6 +18,32 @@ import {
 } from "./notification-patch.ts";
 import { evaluateNotificationPatch, type CompatVerdict } from "./compat.ts";
 
+const notificationClickSenders = new WeakSet<object>();
+
+/** 标记由 TabManager 创建、装了通知点击 preload 的 WebContents */
+export function markNotificationClickSender(wc: object): void {
+  notificationClickSenders.add(wc);
+}
+
+/** 通知点击 IPC 只接受这些 WebContents，避免其它渲染层伪装来源 */
+export function isNotificationClickSender(wc: object): boolean {
+  return notificationClickSenders.has(wc);
+}
+
+export interface NotificationTabLookup {
+  allDraftContexts(): Array<{ tabId: string }>;
+  draftContents(tabId: string): object | null;
+}
+
+/** 只按 IPC sender 反查 Tab，不接收 Renderer 传入的任意 Tab ID */
+export function findNotificationSenderTabId(
+  lookup: NotificationTabLookup,
+  sender: object,
+): string | null {
+  return lookup.allDraftContexts().find((context) => lookup.draftContents(context.tabId) === sender)
+    ?.tabId ?? null;
+}
+
 /** WebContents 的最小结构面（Electron 的 WebContents 天然满足） */
 export interface NotifiableContents {
   isDestroyed(): boolean;

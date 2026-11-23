@@ -1,5 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
-import { DRAFT_IPC, IPC, TAB_IPC } from "../shared/types";
+import { app, BrowserWindow, ipcMain, shell, type WebContents } from "electron";
+import { DRAFT_IPC, IPC, NOTIFICATION_IPC, TAB_IPC } from "../shared/types";
 import type { DraftWorkspace } from "./tabs/draft-workspace";
 import type { SplitPreset } from "../shared/split";
 import type { DropSide } from "../shared/split-model";
@@ -49,6 +49,14 @@ export function registerIpc(context: IpcContext): void {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(IPC.logEvent, line);
     }
+  });
+}
+
+/** Windows 通知点击：只把来源 WebContents 交给主进程，不接收 Renderer 传入的 Tab ID。 */
+export function registerNotificationIpc(onClicked: (sender: WebContents) => void): void {
+  ipcMain.on(NOTIFICATION_IPC.clicked, (event) => {
+    if (event.sender.isDestroyed()) return;
+    onClicked(event.sender);
   });
 }
 

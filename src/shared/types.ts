@@ -48,6 +48,15 @@ export const IPC = {
   logEvent: "shell:log",
 } as const;
 
+export const NOTIFICATION_IPC = {
+  clicked: "notification:clicked",
+} as const;
+
+/** 只注入到 pi-web WebContentsView 的最小通知点击接口 */
+export interface NotificationClickApi {
+  clicked(): void;
+}
+
 /* ------------------------------- 页签 ------------------------------- */
 
 /**

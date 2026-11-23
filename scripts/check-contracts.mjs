@@ -198,7 +198,26 @@ const FEATURES = [
     ours: [
       {
         file: "src/main/tabs/notification-patch.ts",
-        needles: ["showNotification", "window.Notification", "document.hasFocus", "__piDesktopWindowFocused"],
+        needles: [
+          "showNotification",
+          "window.Notification",
+          "document.hasFocus",
+          "__piDesktopWindowFocused",
+          '__piDesktopNotificationBridge',
+          'addEventListener("click"',
+        ],
+      },
+      {
+        file: "src/preload/notification.ts",
+        needles: ["notification:clicked", "contextBridge.exposeInMainWorld", "ipcRenderer.send"],
+      },
+      {
+        file: "src/main/ipc.ts",
+        needles: ["NOTIFICATION_IPC.clicked", "registerNotificationIpc"],
+      },
+      {
+        file: "src/main/tabs/tab-manager.ts",
+        needles: ['join(__dirname, "../preload/notification.js")', "markNotificationClickSender"],
       },
     ],
     upstream: [

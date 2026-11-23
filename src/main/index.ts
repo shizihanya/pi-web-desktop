@@ -4,7 +4,12 @@ import { join } from "node:path";
 import { trayIconPath, windowIconPath } from "./assets";
 import { DRAFT_IPC, IPC } from "../shared/types";
 import type { SplitPreset } from "../shared/split";
-import { registerDraftIpc, registerIpc, registerTabIpc } from "./ipc";
+import {
+  registerDraftIpc,
+  registerIpc,
+  registerNotificationIpc,
+  registerTabIpc,
+} from "./ipc";
 import { installAppMenu } from "./menu";
 import { REMOTE_ACCESS_KEY, readSecret } from "./secret-store";
 import { listLanAddresses } from "./server/network";
@@ -14,6 +19,10 @@ import { dataDir, loadSettings, logFilePath, type AppSettings } from "./settings
 import { SettingsService } from "./settings-service";
 import { openSettingsWindow } from "./settings-window";
 import { TabManager } from "./tabs/tab-manager";
+import {
+  findNotificationSenderTabId,
+  isNotificationClickSender,
+} from "./tabs/notification-bridge";
 import { DraftWorkspace, type DraftContents } from "./tabs/draft-workspace";
 import {
   COMPOSER_DIAGNOSE_SCRIPT,
@@ -107,6 +116,16 @@ async function boot(): Promise<void> {
   registerIpc({ manager, onReady: (url) => void showMainWindow(url) });
   registerTabIpc(() => tabs, () => {
     openSettingsWindow(mainWindow);
+  });
+  registerNotificationIpc((sender) => {
+    if (quitting || !isNotificationClickSender(sender)) return;
+    const current = tabs;
+    const sourceTabId = current ? findNotificationSenderTabId(current, sender) : null;
+    showMainWindowIfPossible();
+    if (sourceTabId && current) current.activate(sourceTabId);
+    if (process.env.PI_WEB_DESKTOP_DEBUG_NOTIFY) {
+      manager?.log(`[notify] 点击激活：tab=${sourceTabId ?? "none"}`);
+    }
   });
   settingsService.registerIpc();
 

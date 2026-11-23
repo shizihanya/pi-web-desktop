@@ -10,6 +10,7 @@ import {
   type WebContents,
 } from "electron";
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import type { TabInfo, TabStatus, TabsSnapshot, ThemeSnapshot } from "../../shared/types";
 import { DRAFT_MAX_WIDTH, sessionKeyFromPath, type DraftContext } from "./draft-model";
 import type { CompatVerdict } from "./compat";
@@ -61,7 +62,7 @@ import {
 } from "./tab-status";
 import { TabStatusManager, type StatusSource } from "./tab-status-manager";
 import { CompatibilityTracker } from "./compat";
-import { NotificationBridge } from "./notification-bridge";
+import { NotificationBridge, markNotificationClickSender } from "./notification-bridge";
 import { ThemeManager } from "./theme-manager";
 import {
   INITIAL_TAB_LIFECYCLE,
@@ -522,12 +523,15 @@ export class TabManager {
       webPreferences: {
         // 与浏览器一致的持久化分区：PI_WEB_PASSWORD 登录态、localStorage 都保留
         partition: "persist:piweb",
+        // 只暴露通知点击能力；preload 缺失时上游通知仍可正常工作
+        preload: join(__dirname, "../preload/notification.js"),
         sandbox: true,
         contextIsolation: true,
         nodeIntegration: false,
         spellcheck: false,
       },
     });
+    markNotificationClickSender(view.webContents);
 
     const tab: Tab = {
       id: randomUUID(),

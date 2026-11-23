@@ -43,10 +43,23 @@ function makeRealm({ title = "会话A - Pi Web", withSw = true, withNotification
     constructor(titleText, options) {
       this.title = titleText;
       this.options = options;
+      this.listeners = new Map();
+      this.onclick = null;
       created.push(this);
+    }
+    addEventListener(type, listener) {
+      const list = this.listeners.get(type) ?? [];
+      list.push(listener);
+      this.listeners.set(type, list);
+    }
+    dispatch(type) {
+      if (type === "click" && typeof this.onclick === "function") this.onclick.call(this);
+      for (const listener of [...(this.listeners.get(type) ?? [])]) listener.call(this);
     }
   }
   const win = {};
+  const bridgeCalls = { count: 0 };
+  win.__piDesktopNotificationBridge = { clicked: () => { bridgeCalls.count += 1; } };
   if (withNotification) win.Notification = FakeNotification;
   if (withSw) {
     win.ServiceWorkerRegistration = {
@@ -59,7 +72,7 @@ function makeRealm({ title = "会话A - Pi Web", withSw = true, withNotification
   };
   globalThis.window = win;
   globalThis.document = doc;
-  return { win, doc, created, originalNotification: win.Notification };
+  return { win, doc, created, bridgeCalls, originalNotification: win.Notification };
 }
 function apply(code) {
   const raw = new Function(`return ${code}`)();
@@ -87,6 +100,15 @@ check(
   "通知标题拼进页签名（去掉 ' - Pi Web' 后缀）",
   n1.title === "会话A — 任务完成",
   n1.title,
+);
+let upstreamClicks = 0;
+n1.onclick = () => { upstreamClicks += 1; };
+n1.dispatch("click");
+n1.dispatch("click");
+check(
+  "通知点击：桌面激活只发一次，且不覆盖上游 onclick",
+  realm.bridgeCalls.count === 1 && upstreamClicks === 2,
+  `desktop=${realm.bridgeCalls.count} upstream=${upstreamClicks}`,
 );
 realm.win.__piDesktopWindowFocused = true;
 check("窗口聚焦：document.hasFocus() 为 true", realm.doc.hasFocus() === true);
@@ -152,6 +174,24 @@ check(
     missingResult.notificationWrapped === false &&
     missingResult.error === null,
   JSON.stringify(missingResult),
+);
+
+const noBridge = makeRealm();
+delete noBridge.win.__piDesktopNotificationBridge;
+apply(PATCH);
+let missingBridgeSafe = true;
+let missingBridgeUpstream = 0;
+try {
+  const n3 = new noBridge.win.Notification("任务完成");
+  n3.onclick = () => { missingBridgeUpstream += 1; };
+  n3.dispatch("click");
+} catch (error) {
+  missingBridgeSafe = false;
+}
+check(
+  "preload 缺失时安全降级：不抛错，上游 onclick 仍工作",
+  missingBridgeSafe && missingBridgeUpstream === 1,
+  `safe=${missingBridgeSafe} upstream=${missingBridgeUpstream}`,
 );
 
 if (failed) process.exit(1);

@@ -19,6 +19,7 @@ export default defineConfig({
           shell: resolve(__dirname, "src/preload/shell.ts"),
           tabbar: resolve(__dirname, "src/preload/tabbar.ts"),
           settings: resolve(__dirname, "src/preload/settings.ts"),
+          notification: resolve(__dirname, "src/preload/notification.ts"),
         },
         external: ["electron"],
         output: { format: "cjs", entryFileNames: "[name].js" },

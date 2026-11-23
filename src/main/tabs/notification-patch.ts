@@ -9,7 +9,8 @@
  * 补丁只做三件事，不碰其它 Web API、不改 pi-web 文件：
  *  1. 让 SW showNotification reject，回落到 window.Notification；
  *  2. 用 __piDesktopWindowFocused 把 BrowserWindow 焦点同步给 document.hasFocus()；
- *  3. 包装 Notification 构造器，把页签名（会话/项目名）拼进通知标题。
+ *  3. 包装 Notification 构造器，把页签名（会话/项目名）拼进通知标题；
+ *  4. 给每条通知附加 click 监听，只通知桌面层恢复窗口，不覆盖上游 onclick。
  *
  * 幂等：dom-ready / did-finish-load 各执行一次；页面 realm 重建后自动重新安装。
  * 注入脚本返回 JSON 诊断，交给 compat.ts 做 notificationCompatible 判定；
@@ -85,6 +86,19 @@ export const WINDOWS_NOTIFICATION_PATCH = String.raw`(() => {
             }
           } catch (e) {}
           super(finalTitle, options);
+          var clickReported = false;
+          try {
+            if (typeof this.addEventListener === "function") {
+              this.addEventListener("click", function () {
+                if (clickReported) return;
+                clickReported = true;
+                try {
+                  var bridge = window.__piDesktopNotificationBridge;
+                  if (bridge && typeof bridge.clicked === "function") bridge.clicked();
+                } catch (e) {}
+              });
+            }
+          } catch (e) {}
         }
       }
       window.Notification = PiDesktopNotification;

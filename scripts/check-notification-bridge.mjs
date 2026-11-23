@@ -6,7 +6,12 @@
  *
  *   npm run check:notification-bridge
  */
-import { NotificationBridge } from "../src/main/tabs/notification-bridge.ts";
+import {
+  NotificationBridge,
+  findNotificationSenderTabId,
+  isNotificationClickSender,
+  markNotificationClickSender,
+} from "../src/main/tabs/notification-bridge.ts";
 
 let failed = 0;
 function check(label, ok, detail = "") {
@@ -77,6 +82,25 @@ function makeBridge(wcs, overrides = {}) {
 const isPatch = (code) => code.includes("class PiDesktopNotification");
 const isCompatOnly = (code) => code.includes("hasServiceWorkerRegistration") && !isPatch(code);
 const isFocusScript = (code) => code.includes("__piDesktopWindowFocused =");
+
+/* ------------------------- 通知点击 sender 标记 ------------------------- */
+{
+  const wc = makeWC();
+  check("普通 WebContents 默认不是通知点击来源", !isNotificationClickSender(wc));
+  markNotificationClickSender(wc);
+  check("TabManager 创建的 WebContents 被标记为通知点击来源", isNotificationClickSender(wc));
+
+  const tabA = {}, tabB = {}, other = {};
+  let contexts = [{ tabId: "tab-a" }, { tabId: "tab-b" }];
+  const lookup = {
+    allDraftContexts: () => contexts,
+    draftContents: (id) => (id === "tab-a" ? tabA : id === "tab-b" ? tabB : null),
+  };
+  check("按 IPC sender 反查到来源 Tab，不接受任意 Renderer ID", findNotificationSenderTabId(lookup, tabB) === "tab-b");
+  check("非 Tab WebContents 反查为 null", findNotificationSenderTabId(lookup, other) === null);
+  contexts = [{ tabId: "tab-a" }];
+  check("来源 Tab 已关闭时反查为 null，只恢复窗口", findNotificationSenderTabId(lookup, tabB) === null);
+}
 
 /* ------------------------- 安装 / 幂等 / 重载 ------------------------- */
 {
