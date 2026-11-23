@@ -41,10 +41,23 @@ let resultKey = "";
 let resultTimer: number | null = null;
 
 const SEND_LABEL: Record<ComposerMode, string> = {
-  send: "发送到对话",
-  steer: "发送引导",
-  followUp: "排队后续消息",
+  send: "→ 发送",
+  steer: "→ 引导",
+  followUp: "→ 后续消息",
 };
+
+/**
+ * 顶栏只展示可读短标识：UUID 收敛到前 8 位，完整信息放进 title 供悬停查看。
+ * 非 UUID（可读会话名）原样显示，不把人类可读的 key 误截成乱码。
+ */
+const UUID_KEY = /^(?:session:)?([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function sessionLabel(title: string, sessionKey: string | null | undefined): string {
+  const project = title || "新页签";
+  if (!sessionKey) return project;
+  const uuid = UUID_KEY.exec(sessionKey);
+  return uuid ? `${project} · #${uuid[1]}` : `${project} · ${sessionKey}`;
+}
 
 function flush(): Promise<void> {
   if (saveTimer !== null) {
@@ -87,6 +100,10 @@ function render(snapshot: DraftSnapshot): void {
   }
 
   tabLabel.textContent = snapshot.tabId
+    ? sessionLabel(snapshot.tabTitle, snapshot.sessionKey)
+    : "没有可用的页签";
+  // 完整 project · session:<full-uuid> 只在悬停时出现，顶栏保持轻量
+  tabLabel.title = snapshot.tabId
     ? `${snapshot.tabTitle || "新页签"} · ${snapshot.sessionKey ?? "—"}`
     : "没有可用的页签";
 
@@ -171,7 +188,7 @@ function render(snapshot: DraftSnapshot): void {
   }
 
   editor.placeholder = snapshot.enabled
-    ? "在这里写长文本（Markdown 文本、粘贴 / 拖入图片、@ 文件路径）… Ctrl+Enter 发送"
+    ? "撰写长文本，支持 Markdown、粘贴图片或 @ 文件路径..."
     : "独立输入工作区已关闭";
 }
 

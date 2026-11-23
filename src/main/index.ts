@@ -938,7 +938,7 @@ function runDraftSelftest(): void {
       ui.push(`singleSubmit=${structure.noModebar && structure.noNativeButton && structure.noMore && structure.noMenu && structure.hasSend}`);
       ui.push(`nativeSvgIcon=${structure.attachSvg && structure.attachBorder === "none"} (${structure.attachBorder})`);
       ui.push(`sendLabel=${structure.sendText}`);
-      ui.push(`autoModeIdle=${structure.sendText === "发送到对话"}`);
+      ui.push(`autoModeIdle=${structure.sendText === "→ 发送"}`);
       ui.push(`hiddenNativeEntry=${structure.hasContext && structure.contextHidden}`);
 
       // 64x64 纯色 PNG：验证附件能取回数据、点开后图片确实有可见尺寸

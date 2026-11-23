@@ -7,6 +7,14 @@ import type { BrowserWindow, BrowserWindowConstructorOptions } from "electron";
 export const TITLEBAR_HEIGHT = 40;
 
 /**
+ * WCO 原生叠加层比页签栏少 1px：
+ * 页签栏的 border-bottom 画在 40px 盒子的最后一行（y=39），
+ * overlay 若也是 40px，就会在右侧窗口控件区把这条线整段盖掉，视觉上分割线「断在半路」。
+ * 少 1px 后边框在整窗宽连续，原生按钮仍在同一条标题栏内。
+ */
+const WCO_OVERLAY_HEIGHT = TITLEBAR_HEIGHT - 1;
+
+/**
  * 是否启用「隐藏系统标题栏 + 原生窗口控件叠加（WCO）」。
  * 只有 Windows 需要；设 PI_WEB_DESKTOP_NATIVE_TITLEBAR=1 可退回系统标题栏。
  */
@@ -22,7 +30,7 @@ export function titleBarOptions(
   if (!customTitleBarEnabled()) return {};
   return {
     titleBarStyle: "hidden",
-    titleBarOverlay: { color, symbolColor, height: TITLEBAR_HEIGHT },
+    titleBarOverlay: { color, symbolColor, height: WCO_OVERLAY_HEIGHT },
   };
 }
 
@@ -30,7 +38,7 @@ export function titleBarOptions(
 export function setTitleBarColors(win: BrowserWindow, color: string, symbolColor: string): void {
   if (!customTitleBarEnabled() || win.isDestroyed()) return;
   try {
-    win.setTitleBarOverlay({ color, symbolColor, height: TITLEBAR_HEIGHT });
+    win.setTitleBarOverlay({ color, symbolColor, height: WCO_OVERLAY_HEIGHT });
   } catch {
     // 窗口可能正在销毁，忽略
   }

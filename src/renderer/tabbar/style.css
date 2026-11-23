@@ -874,21 +874,26 @@ body {
   flex-direction: column;
   z-index: 15;
   border-left: 1px solid var(--border, #d0d7de);
-  background: var(--bg-panel, var(--bg, #ffffff));
+  /* 编辑画布 = pi-web 主表面色（--bg 由 theme-manager 同步），顶/底栏用同色 + 细分割线 */
+  background: var(--bg, #ffffff);
   color: var(--text, #1f2328);
   box-shadow: -2px 0 8px rgba(0, 0, 0, 0.06);
 }
 
+/* 与 pi-web 顶部工具栏同一行：36px（含 1px 分割线）才能对齐它的底线；
+   底色用 --bg-panel（次级表面），不能用纯白 --bg，否则主题切换后必然割裂。 */
 .draft-header {
   display: flex;
   align-items: center;
   gap: 8px;
   flex: 0 0 auto;
-  padding: 8px 10px;
+  height: 36px;
+  padding: 0 10px;
   border-bottom: 1px solid var(--border, #d0d7de);
-  background: var(--bg, #ffffff);
+  background: var(--bg-panel, var(--bg, #ffffff));
 }
 .draft-title {
+  flex: 0 0 auto;
   font-weight: 600;
   font-size: 13px;
   white-space: nowrap;
@@ -899,24 +904,33 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  line-height: 1.45;
   font-size: 11px;
   color: var(--text-muted, var(--text-dim, #6e7781));
 }
+/* 与顶部栏 .tool-button 同一套：透明底、无边框，只在 hover / focus 时给浅灰圆角底 */
 .draft-close {
   flex: 0 0 auto;
   width: 24px;
   height: 24px;
   padding: 0;
-  border: 1px solid var(--border, #d0d7de);
+  border: 0;
   border-radius: 6px;
-  background: var(--bg, #ffffff);
-  color: var(--text, #1f2328);
+  background: transparent;
+  color: var(--text-muted, var(--text, #1f2328));
   cursor: pointer;
   font-size: 17px;
   line-height: 1;
+  transition: background-color 120ms ease, color 120ms ease;
 }
-.draft-close:hover {
-  background: var(--bg-selected, rgba(127, 127, 127, 0.16));
+.draft-close:hover,
+.draft-close:focus-visible {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.12));
+  color: var(--text, #1f2328);
+}
+.draft-close:focus-visible {
+  outline: 1px solid var(--accent, #0969da);
+  outline-offset: -2px;
 }
 
 .draft-compat {
@@ -944,7 +958,7 @@ body {
   min-height: 120px;
   box-sizing: border-box;
   margin: 0;
-  padding: 12px 14px;
+  padding: 16px 18px;
   border: 0;
   outline: none;
   resize: none;
@@ -953,6 +967,27 @@ body {
   color: var(--text, #1f2328);
   font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   tab-size: 2;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text-muted, #6e7781) 34%, transparent) transparent;
+}
+.draft-editor::placeholder {
+  color: color-mix(in srgb, var(--text-dim, #6e7781) 82%, transparent);
+}
+.draft-editor::-webkit-scrollbar {
+  width: 10px;
+}
+.draft-editor::-webkit-scrollbar-track {
+  background: transparent;
+}
+.draft-editor::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--text-muted, #6e7781) 34%, transparent);
+  background-clip: content-box;
+}
+.draft-editor::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted, #6e7781) 55%, transparent);
+  background-clip: content-box;
 }
 
 /* 拖动分隔条：向左拖变宽、向右拖变窄 */
@@ -1059,25 +1094,42 @@ body {
   padding: 8px 10px;
   border-top: 1px solid var(--border, #d0d7de);
   background: var(--bg, #ffffff);
+  /* 面板被拖窄时按自身宽度隐藏次要提示，而不是看窗口宽度 */
+  container-type: inline-size;
 }
 .draft-count,
+.draft-separator,
 .draft-hint {
   font-size: 11px;
-  color: var(--text-muted, var(--text-dim, #6e7781));
   white-space: nowrap;
+}
+.draft-count {
+  color: var(--text-muted, var(--text-dim, #6e7781));
+  font-variant-numeric: tabular-nums;
+}
+.draft-separator {
+  color: color-mix(in srgb, var(--text-dim, #6e7781) 60%, transparent);
 }
 .draft-hint {
   flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: color-mix(in srgb, var(--text-dim, #6e7781) 82%, transparent);
+}
+@container (max-width: 320px) {
+  .draft-separator,
+  .draft-hint {
+    display: none;
+  }
 }
 
 /* 唯一的主提交按钮：文案随主进程自动判定的模式变化，没有下拉 / 第二按钮 */
 .draft-send {
   flex: 0 0 auto;
-  padding: 5px 12px;
+  padding: 5px 14px;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--radius-pill);
   background: var(--accent, #0969da);
   color: var(--accent-contrast, #ffffff);
   font-weight: 600;

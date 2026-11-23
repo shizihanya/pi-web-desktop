@@ -32,6 +32,10 @@ check(
   "主进程 TITLEBAR_HEIGHT 与 CSS 一致",
   /TITLEBAR_HEIGHT\s*=\s*40/.test(titlebar),
 );
+/* 独立输入头部必须和 pi-web 自己的顶部工具栏同高、同表面色：
+   否则分割线错位、浅色主题下出现一块纯白补丁。 */
+check("独立输入头部与 pi-web 工具栏同高（36px）", /\.draft-header\s*\{[^}]*height:\s*36px/s.test(css));
+check("独立输入头部用主题次级表面色 --bg-panel", /\.draft-header\s*\{[^}]*background:\s*var\(--bg-panel/s.test(css));
 check(
   "拖动区只声明在 .drag-strip 上",
   [...css.matchAll(/-webkit-app-region:\s*drag/g)].length >= 1 &&
@@ -66,6 +70,12 @@ check("状态点四态（运行/复用/异常/启动中）", /\.dot\.ok/.test(cs
 check("端口与次要信息分开展示", /id="status-text"/.test(html) && /id="status-extra"/.test(html) && /statusExtra\.textContent/.test(ts));
 check("状态数据仍来自 ServerState", /onServerState\(renderStatus\)/.test(ts) && /getServerState\(\)/.test(ts));
 check("WCO 安全区用 env() + 140px 兜底", /--wco-safe-width:[\s\S]*?env\(titlebar-area-x[\s\S]*?140px/.test(css));
+check(
+  "WCO 叠加层比页签栏少 1px，底部分割线整窗连续",
+  /WCO_OVERLAY_HEIGHT\s*=\s*TITLEBAR_HEIGHT\s*-\s*1/.test(titlebar) &&
+    /titleBarOverlay:\s*\{[^}]*height:\s*WCO_OVERLAY_HEIGHT/.test(titlebar) &&
+    /setTitleBarOverlay\(\{[^}]*height:\s*WCO_OVERLAY_HEIGHT/.test(titlebar),
+);
 check("窗口控件是显式独立区域", /class="window-controls"/.test(html) && /:root\[data-titlebar="overlay"\]\s+\.window-controls\s*\{[^}]*width:\s*var\(--wco-safe-width\)/s.test(css));
 check("原生标题栏模式下不预留安全区", /\.window-controls\s*\{[^}]*display:\s*none/s.test(css));
 check("未改动 preload / IPC 通道", /contextBridge\.exposeInMainWorld\("piWebTabs", api\)/.test(preload) && !/window:(minimize|maximize|close)/.test(preload));
