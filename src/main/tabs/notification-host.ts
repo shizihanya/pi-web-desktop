@@ -33,10 +33,12 @@ export function installNotificationHost(deps: NotificationHostDeps): void {
     log: deps.log,
   });
 
+  // sendSync 的回复值只能赋值一次：Electron 在 event.returnValue 首次赋值时就发出同步回复，
+  // 先置 null 再覆写会让渲染层拿到 null，误判桥失败而回落 Chromium 通知（每次完成弹两条 toast）。
   ipcMain.on(NOTIFICATION_IPC.create, (event, rawPayload: unknown) => {
-    event.returnValue = null;
-    if (event.sender.isDestroyed()) return;
-    event.returnValue = lifecycle.create(event.sender, rawPayload);
+    const reply =
+      event.sender.isDestroyed() ? null : lifecycle.create(event.sender, rawPayload);
+    event.returnValue = reply;
   });
 
   ipcMain.on(NOTIFICATION_IPC.close, (event, id: unknown) => {
