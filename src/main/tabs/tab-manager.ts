@@ -273,6 +273,13 @@ export class TabManager {
     // 窗口失焦时鼠标很可能已经在别处松开：结束拖动并落盘，避免 ratio 卡在拖动态
     if (this.sashDragging) this.endSashDrag();
   };
+  /** 窗口尺寸变化要重排视图并把新矩形同步给页签栏渲染层。
+   *  必须是具名引用：主窗口在服务地址变化 / 重启服务时会被复用（同一个 BrowserWindow），
+   *  destroy() 摘不干净就会在窗口上无限叠加监听器（relayout/notify/写盘被成倍放大）。 */
+  private readonly onWindowRelayout = (): void => {
+    this.layout();
+    this.notify();
+  };
 
   constructor(private readonly options: TabManagerOptions) {
     this.compat = new CompatibilityTracker({
@@ -335,13 +342,9 @@ export class TabManager {
       onCompatibility: (verdict) => this.compat.set("statusProbe", verdict),
     });
     // 窗口尺寸变了要重排视图，并把新的窗格矩形同步给页签栏渲染层
-    const relayout = (): void => {
-      this.layout();
-      this.notify();
-    };
-    this.options.win.on("resize", relayout);
-    this.options.win.on("maximize", relayout);
-    this.options.win.on("unmaximize", relayout);
+    this.options.win.on("resize", this.onWindowRelayout);
+    this.options.win.on("maximize", this.onWindowRelayout);
+    this.options.win.on("unmaximize", this.onWindowRelayout);
     this.windowShortcutHandler = this.attachShortcuts(this.options.win.webContents);
     this.options.win.on("focus", this.onWindowFocus);
     this.options.win.on("blur", this.onWindowBlur);
@@ -551,6 +554,13 @@ export class TabManager {
     };
 
     const wc = view.webContents;
+    // Electron 在 WebContents 上内部维护约 10 个 did-stop-loading 监听器，
+    // 壳子每页签再注册事件就超过默认阈值 10，触发 MaxListenersExceededWarning。
+    try {
+      wc.setMaxListeners(25);
+    } catch {
+      // 个别平台没有该 API 时忽略，警告无害
+    }
     this.attachShortcuts(wc, tab.id);
     // 点进哪个窗格，哪个窗格就是「当前窗格」：Ctrl+W / Ctrl+R / 缩放等都作用于它
     wc.on("focus", () => this.noteGroupFocus(tab.id));
@@ -1219,6 +1229,10 @@ export class TabManager {
     if (!this.options.win.isDestroyed()) {
       this.options.win.off("focus", this.onWindowFocus);
       this.options.win.off("blur", this.onWindowBlur);
+      // 摘掉构造器里注册的全部窗口监听器：主窗口会被复用，留一个都会叠加
+      this.options.win.off("resize", this.onWindowRelayout);
+      this.options.win.off("maximize", this.onWindowRelayout);
+      this.options.win.off("unmaximize", this.onWindowRelayout);
       if (!this.options.win.webContents.isDestroyed()) {
         this.options.win.webContents.off("before-input-event", this.windowShortcutHandler);
       }
